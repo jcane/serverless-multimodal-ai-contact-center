@@ -35,4 +35,6 @@ Need to deploy an autonomous, enterprise-grade AI support center or global strea
 
     📧 Contact: info@fixyachips.com
 
+<meta name="google-site-verification" content="kb6aVw-eDBwu4jRTNqTTP7hhsxdBZtXDyAWHC1ZnjTk" />
+
     💼 Availability: Fractional Advisory, Infrastructure Audits, and Custom Cloud Automation Sprints.

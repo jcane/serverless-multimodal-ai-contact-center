@@ -5,7 +5,7 @@ I lead client discovery through enterprise architecture audits and rapid serverl
 
 Core Focus & Expertise
 
-Container-to-Serverless Migration:** Deconstructing heavy, expensive legacy architecture into automated, event-driven serverless architectures.
+Container-to-Serverless Migration: Deconstructing heavy, expensive legacy architecture into automated, event-driven serverless architectures.
 FinOps & Cost Optimization:** Implementing S3 Intelligent-Tiering, automated log retention policies, and DynamoDB On-Demand modeling to eliminate idle infrastructure waste.
 Enterprise Edge Security:** Hardening global applications with AWS WAF, custom rate-limiting, Bot Control, and strict transport encryption (HSTS/CSP).
 Rapid Execution & Research:** Translating complex enterprise requirements into fully automated, production-ready AWS CloudFormation deployments.

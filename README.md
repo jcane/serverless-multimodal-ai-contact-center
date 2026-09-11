@@ -15,3 +15,4 @@ A live, production-grade video-on-demand platform deployed via AWS CloudFormatio
 * Security: WAF rate-limiting and bot controls, KMS CMK encryption at rest, encrypted webhook handling via Secrets Manager.
 * Data & Storage: DynamoDB on-demand billing with PITR, S3 tiering and lifecycle retention.
 
+![Fixyachips VOD Pipeline Architecture](./Fixyachips-Network-Diagram.jpg)

@@ -1,6 +1,10 @@
 # Joshua Cane
 Cloud & Serverless Builder | AWS & Node.js/Python
 
+my project that is in continual revamping and progress
+
+What I’m posting here is the ultimate goal which I’m very close to having operational
+
 I build event-driven, cost-optimized serverless applications on AWS with automated Infrastructure as Code (CloudFormation). Focused on cloud security best practices, scalable media delivery, and secure third-party integrations.
 
 ## Core Technical Skills

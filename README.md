@@ -6,7 +6,18 @@ my project that is in continual revamping and progress
 What I’m posting here is the ultimate goal which I’m very close to having operational
 
 I build event-driven, cost-optimized serverless applications on AWS with automated Infrastructure as Code (CloudFormation). Focused on cloud security best practices, scalable media delivery, and secure third-party integrations.
+ 
 
+## Project Update & Baseline Reset (Oct 2026)
+
+### Status & Retrospective
+During the initial phase of the **fixyachips** project (Jan 2026 – Oct 2026), environment provisioning, adjustments, and troubleshooting steps were not tracked incrementally under standard version control or formal changelogs.
+
+### Current State
+As of **October 16, 2026**, Linux Mint 22 has been installed on the Dell Precision 7160, but final setup is still pending due to active Wi-Fi connectivity troubleshooting.
+
+### Moving Forward
+Historical chat logs are archived locally via Google Takeout. All future configuration steps, system fixes, and infrastructure updates will be strictly documented starting from our clean **v1.0.0 CHANGELOG baseline** and managed directly through Git commits.
 ## Core Technical Skills
 * Cloud & IaC: AWS CloudFormation, S3, CloudFront, Lambda, API Gateway, DynamoDB, SQS, KMS
 * Media & Integration: AWS Elemental MediaConvert, Stripe API/Webhooks

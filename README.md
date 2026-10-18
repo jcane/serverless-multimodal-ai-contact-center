@@ -91,39 +91,6 @@ No happy path documentation here.
 
 - **Platform:** fixyachips.com
 - **Email:** info@fixyachips.com
-- **LinkedIn:** [your profile URL]
+- **LinkedIn:** www.linkedin.com/in/aws-solutions-architect-serverless-solutions
 
----
-
-*Updated weekly during the migration. October 2026.*
-
-Paste This Now And Use This Commit Message
-
-"docs: rebuild README - CF to Terraform migration phase
-
-- Fixyachips v4.5.1 platform overview
-- 6-week Terraform + AgentCore migration timeline
-- Skills updated to include Terraform and AgentCore
-- Build log references Issues tab
-- Removed outdated setup notes"
-
-What This README Does
-
-Line 1-4:   Hiring manager knows who you are
-            and what you are doing in 10 seconds
-
-Line 5-20:  Platform credibility
-            Real payments. Real video. Real scale.
-
-Line 21-35: Shows you know what needs fixing
-            and have a plan to fix it
-
-Table:      Active work. Not a finished project.
-            Engineers want to see momentum.
-
-Skills:     Terraform + AgentCore visible
-            immediately for the job requirement
-
-Build Log:  Signals honesty and documentation
-            discipline without listing everything
-            here. Issues tab does the heavy lifting.
+ 

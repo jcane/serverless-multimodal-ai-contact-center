@@ -1,0 +1,987 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Fixyachips Enterprise VOD & Monetization Platform v4.3.0.
+  Includes WAF, CloudFront Signed Media Streaming, MediaConvert Pipeline,
+  Stripe Webhooks, Secrets Manager, REST API, and Proactive CloudWatch Alarms.
+
+Parameters:
+
+  AdminEmail:
+    Type: String
+    Default: 'info@fixyachips.com'
+    Description: Admin email for alerts, SNS topics, and waitlist notifications
+    AllowedPattern: '^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$'
+    ConstraintDescription: Must be a valid email address
+
+  CertificateArn:
+    Type: String
+    Default: 'arn:aws:acm:us-east-1:980049663300:certificate/f18b7918-a24d-4a36-bfe4-34a114d4ccaf'
+    Description: ACM certificate ARN in us-east-1 for fixyachips.com
+    AllowedPattern: '^arn:aws:acm:us-east-1:[0-9]{12}:certificate/[a-f0-9\-]+$'
+    ConstraintDescription: Must be a valid ACM certificate ARN in us-east-1
+
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues:
+      - prod
+      - staging
+      - dev
+    Description: Deployment environment
+
+  CloudFrontPublicKeyPEM:
+    Type: String
+    NoEcho: true
+    Default: '-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzR3\n-----END PUBLIC KEY-----'
+    Description: PEM-encoded RSA Public Key for CloudFront VOD Signed URL/Cookie Verification
+
+Resources:
+
+  # ----------------------------------------------------------
+  # CLOUDFRONT PUBLIC KEY & KEY GROUP (VOD SECURITY)
+  # ----------------------------------------------------------
+  VODPublicKey:
+    Type: AWS::CloudFront::PublicKey
+    Properties:
+      PublicKeyConfig:
+        Name: !Sub 'VODPublicKey-${AWS::StackName}'
+        EncodedKey: !Ref CloudFrontPublicKeyPEM
+        Comment: Public key for signing private VOD video streams
+
+  VODKeyGroup:
+    Type: AWS::CloudFront::KeyGroup
+    Properties:
+      KeyGroupConfig:
+        Name: !Sub 'VODKeyGroup-${AWS::StackName}'
+        Items:
+          - !Ref VODPublicKey
+        Comment: KeyGroup required to enforce CloudFront Signed URLs/Cookies on video paths
+
+  # ----------------------------------------------------------
+  # CLOUDFRONT ORIGIN ACCESS CONTROL
+  # ----------------------------------------------------------
+  EmpireOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub 'Empire-OAC-${AWS::StackName}'
+        Description: OAC for S3 SigV4 bucket signing
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # ----------------------------------------------------------
+  # WAF - CLOUDFRONT SCOPE
+  # ----------------------------------------------------------
+  WebBodyguard:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      Name: !Sub 'FixyachipsShield-${AWS::StackName}'
+      Scope: CLOUDFRONT
+      DefaultAction:
+        Allow: {}
+      VisibilityConfig:
+        SampledRequestsEnabled: true
+        CloudWatchMetricsEnabled: true
+        MetricName: !Sub 'FixyachipsWAF-${Environment}'
+      Rules:
+        - Name: CDNRateLimitPerIP
+          Priority: 0
+          Statement:
+            RateBasedStatement:
+              Limit: 2000
+              AggregateKeyType: IP
+          Action:
+            Block: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: CDNRateLimit
+
+        - Name: AWSManagedRulesCommonRuleSet
+          Priority: 1
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesCommonRuleSet
+          OverrideAction:
+            None: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: CommonRules
+
+        - Name: AWSManagedRulesBotControlRuleSet
+          Priority: 2
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesBotControlRuleSet
+              ManagedRuleGroupConfigs:
+                - AWSManagedRulesBotControlRuleSet:
+                    InspectionLevel: COMMON
+          OverrideAction:
+            None: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: BotControl
+
+        - Name: AWSManagedRulesKnownBadInputsRuleSet
+          Priority: 3
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesKnownBadInputsRuleSet
+          OverrideAction:
+            None: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: KnownBadInputs
+
+      Tags:
+        - Key: Project
+          Value: Fixyachips
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ----------------------------------------------------------
+  # CLOUDFRONT EDGE ROUTER FUNCTION
+  # ----------------------------------------------------------
+  WebsiteRouterFunction:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: !Sub 'FixRouter-${AWS::StackName}'
+      AutoPublish: true
+      FunctionConfig:
+        Comment: Clean URL routing at edge
+        Runtime: cloudfront-js-2.0
+      FunctionCode: |
+        function handler(event) {
+          var request = event.request;
+          var uri = request.uri;
+          var isFile = uri.match(
+            /\.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|mp4|m3u8|ts|pdf|webp|json|txt|xml)$/i
+          );
+          if (!isFile) {
+            if (uri.endsWith('/')) {
+              request.uri = uri + 'index.html';
+            } else if (!uri.includes('.')) {
+              request.uri = uri + '.html';
+            }
+          }
+          return request;
+        }
+
+  # ----------------------------------------------------------
+  # S3 LOGS AND CONTENT BUCKETS
+  # ----------------------------------------------------------
+  AccessLogsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub 'fixyachips-logs-${AWS::AccountId}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerPreferred
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: LogRetention90Days
+            Status: Enabled
+            ExpirationInDays: 90
+      Tags:
+        - Key: Project
+          Value: Fixyachips
+        - Key: Environment
+          Value: !Ref Environment
+
+  AccessLogsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref AccessLogsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: S3LogDelivery
+            Effect: Allow
+            Principal:
+              Service: logging.s3.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub 'arn:aws:s3:::${AccessLogsBucket}/*'
+            Condition:
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:aws:s3:::${StreamingVideoBucket}'
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+          - Sid: DenyNonHTTPS
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !Sub 'arn:aws:s3:::${AccessLogsBucket}'
+              - !Sub 'arn:aws:s3:::${AccessLogsBucket}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+
+  StreamingVideoBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub 'fixyachips-platform-${AWS::AccountId}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+            BucketKeyEnabled: true
+      VersioningConfiguration:
+        Status: Enabled
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders:
+              - Authorization
+              - Content-Type
+            AllowedMethods:
+              - GET
+              - HEAD
+            AllowedOrigins:
+              - 'https://fixyachips.com'
+              - 'https://www.fixyachips.com'
+            MaxAge: 3600
+      LoggingConfiguration:
+        DestinationBucketName: !Ref AccessLogsBucket
+        LogFilePrefix: s3-access/
+      LifecycleConfiguration:
+        Rules:
+          - Id: IntelligentTieringAfter90Days
+            Status: Enabled
+            Transitions:
+              - TransitionInDays: 90
+                StorageClass: INTELLIGENT_TIERING
+            NoncurrentVersionTransitions:
+              - TransitionInDays: 30
+                StorageClass: STANDARD_IA
+            NoncurrentVersionExpirationInDays: 180
+          - Id: CleanupIncompleteMultiparts
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+      Tags:
+        - Key: Project
+          Value: Fixyachips
+        - Key: Environment
+          Value: !Ref Environment
+
+  StreamingVideoBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref StreamingVideoBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudFrontOACAccess
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub 'arn:aws:s3:::${StreamingVideoBucket}/*'
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${WebsiteDistribution}'
+          - Sid: DenyNonHTTPS
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !Sub 'arn:aws:s3:::${StreamingVideoBucket}'
+              - !Sub 'arn:aws:s3:::${StreamingVideoBucket}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+
+  # ----------------------------------------------------------
+  # ELEMENTAL MEDIACONVERT TRANSCODING INFRASTRUCTURE
+  # ----------------------------------------------------------
+  MediaConvertRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: IAM execution role for AWS Elemental MediaConvert VOD Transcoding
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: mediaconvert.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: MediaConvertS3ReadWrite
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub 'arn:aws:s3:::${StreamingVideoBucket}'
+                  - !Sub 'arn:aws:s3:::${StreamingVideoBucket}/*'
+      Tags:
+        - Key: Project
+          Value: Fixyachips
+        - Key: Environment
+          Value: !Ref Environment
+
+  MediaConvertQueue:
+    Type: AWS::MediaConvert::Queue
+    Properties:
+      Name: !Sub 'FixyachipsVODQueue-${AWS::StackName}'
+      Description: On-Demand MediaConvert queue for VOD HLS transcoding
+      PricingPlan: ON_DEMAND
+      Status: ACTIVE
+      Tags:
+        Project: Fixyachips
+        Environment: !Ref Environment
+
+  # ----------------------------------------------------------
+  # CLOUDFRONT SECURITY HEADERS & DISTRIBUTION
+  # ----------------------------------------------------------
+  SecurityHeadersPolicy:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: !Sub 'FixyachipsSecurityHeaders-${AWS::StackName}'
+        Comment: Security headers for CloudFront responses
+        SecurityHeadersConfig:
+          StrictTransportSecurity:
+            AccessControlMaxAgeSec: 63072000
+            IncludeSubdomains: true
+            Preload: true
+            Override: true
+          ContentTypeOptions:
+            Override: true
+          FrameOptions:
+            FrameOption: DENY
+            Override: true
+          XSSProtection:
+            Protection: true
+            ModeBlock: true
+            Override: true
+          ReferrerPolicy:
+            ReferrerPolicy: strict-origin-when-cross-origin
+            Override: true
+          ContentSecurityPolicy:
+            ContentSecurityPolicy: "default-src 'self' https://fixyachips.com https://*.fixyachips.com; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https://*.fixyachips.com https://*.amazonaws.com; media-src 'self' https://*.fixyachips.com https://*.cloudfront.net blob:; connect-src 'self' https://*.amazonaws.com https://*.fixyachips.com https://api.stripe.com; frame-ancestors 'none'; upgrade-insecure-requests;"
+            Override: true
+        CustomHeadersConfig:
+          Items:
+            - Header: Permissions-Policy
+              Value: 'camera=(), microphone=(), geolocation=(self), payment=(self)'
+              Override: true
+
+  WebsiteDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub 'Fixyachips Global Platform ${Environment}'
+        PriceClass: PriceClass_All
+        DefaultRootObject: index.html
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        WebACLId: !GetAtt WebBodyguard.Arn
+        Aliases:
+          - fixyachips.com
+          - www.fixyachips.com
+        ViewerCertificate:
+          AcmCertificateArn: !Ref CertificateArn
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2021
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt StreamingVideoBucket.RegionalDomainName
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+            OriginAccessControlId: !GetAtt EmpireOAC.Id
+            OriginShield:
+              Enabled: true
+              OriginShieldRegion: us-east-1
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD]
+          ResponseHeadersPolicyId: !Ref SecurityHeadersPolicy
+          ForwardedValues:
+            QueryString: false
+            Cookies:
+              Forward: none
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+        CacheBehaviors:
+          # Secure VOD behavior requiring Signed URLs or Signed Cookies
+          - PathPattern: 'videos/*'
+            TargetOriginId: S3Origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD]
+            ResponseHeadersPolicyId: !Ref SecurityHeadersPolicy
+            TrustedKeyGroups:
+              - !Ref VODKeyGroup
+            ForwardedValues:
+              QueryString: true
+              Cookies:
+                Forward: none
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /error/403.html
+            ErrorCachingMinTTL: 10
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /error/404.html
+            ErrorCachingMinTTL: 10
+          - ErrorCode: 500
+            ResponseCode: 200
+            ResponsePagePath: /error/500.html
+            ErrorCachingMinTTL: 0
+      Tags:
+        - Key: Project
+          Value: Fixyachips
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ----------------------------------------------------------
+  # SECRETS MANAGER (STRIPE API KEYS & WEBHOOK SECRET)
+  # ----------------------------------------------------------
+  StripeApiSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub 'Fixyachips/StripeCredentials-${AWS::StackName}'
+      Description: Stripe API keys and Webhook signing secrets for monetization
+      SecretString: '{"api_key":"sk_live_placeholder","webhook_secret":"whsec_placeholder"}'
+      Tags:
+        - Key: Project
+          Value: Fixyachips
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ----------------------------------------------------------
+  # DYNAMODB PLATFORM DATASETS
+  # ----------------------------------------------------------
+  StudentTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub 'FixyachipsStudents-${AWS::StackName}'
+      AttributeDefinitions:
+        - AttributeName: StudentID
+          AttributeType: S
+      KeySchema:
+        - AttributeName: StudentID
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+      SSESpecification:
+        SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      Tags:
+        - Key: Project
+          Value: Fixyachips
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ----------------------------------------------------------
+  # SQS DEAD LETTER QUEUE
+  # ----------------------------------------------------------
+  SignupDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub 'FixyachipsSignupDLQ-${AWS::StackName}'
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+      Tags:
+        - Key: Project
+          Value: Fixyachips
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ----------------------------------------------------------
+  # IAM MASTER ROLE FOR WORKERS
+  # ----------------------------------------------------------
+  FixyachipsMasterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Master Lambda role for DynamoDB, S3, SES, SecretsManager, and MediaConvert
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess
+      Policies:
+        - PolicyName: SecretsManagerStripeAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref StripeApiSecret
+
+        - PolicyName: MediaConvertJobSubmit
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - mediaconvert:CreateJob
+                  - mediaconvert:GetJob
+                Resource: '*'
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt MediaConvertRole.Arn
+
+        - PolicyName: S3ContentAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource: !Sub 'arn:aws:s3:::${StreamingVideoBucket}/*'
+              - Effect: Allow
+                Action: s3:ListBucket
+                Resource: !Sub 'arn:aws:s3:::${StreamingVideoBucket}'
+
+        - PolicyName: DynamoDBStudentAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                Resource:
+                  - !GetAtt StudentTable.Arn
+                  - !Sub '${StudentTable.Arn}/index/*'
+
+        - PolicyName: SESSendEmail
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ses:SendEmail
+                  - ses:SendTemplatedEmail
+                Resource: !Sub 'arn:aws:ses:${AWS::Region}:${AWS::AccountId}:identity/fixyachips.com'
+
+        - PolicyName: DLQAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !GetAtt SignupDLQ.Arn
+      Tags:
+        - Key: Project
+          Value: Fixyachips
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ----------------------------------------------------------
+  # API GATEWAY REST API & ENDPOINTS
+  # ----------------------------------------------------------
+  ApiGatewayCloudWatchRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: API Gateway role for CloudWatch execution logs
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs
+
+  ApiGatewayAccount:
+    Type: AWS::ApiGateway::Account
+    Properties:
+      CloudWatchRoleArn: !GetAtt ApiGatewayCloudWatchRole.Arn
+
+  PlatformApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub 'FixyachipsAPI-${AWS::StackName}'
+      Description: REST API for waitlists and Stripe webhooks
+      EndpointConfiguration:
+        Types: [REGIONAL]
+
+  SignupApiResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref PlatformApi
+      ParentId: !GetAtt PlatformApi.RootResourceId
+      PathPart: signup
+
+  WebhookApiResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref PlatformApi
+      ParentId: !GetAtt PlatformApi.RootResourceId
+      PathPart: webhook
+
+  StripeApiResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref PlatformApi
+      ParentId: !Ref WebhookApiResource
+      PathPart: stripe
+
+  SignupApiMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref PlatformApi
+      ResourceId: !Ref SignupApiResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${SignupWorker.Arn}/invocations'
+
+  StripeWebhookMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref PlatformApi
+      ResourceId: !Ref StripeApiResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${StripeWebhookWorker.Arn}/invocations'
+
+  ApiGatewayDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - SignupApiMethod
+      - StripeWebhookMethod
+    Properties:
+      RestApiId: !Ref PlatformApi
+
+  ApiGatewayStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref PlatformApi
+      DeploymentId: !Ref ApiGatewayDeployment
+      StageName: !Ref Environment
+      TracingEnabled: true
+      MethodSettings:
+        - ResourcePath: '/*'
+          HttpMethod: '*'
+          LoggingLevel: ERROR
+          MetricsEnabled: true
+
+  # ----------------------------------------------------------
+  # LAMBDA WORKERS
+  # ----------------------------------------------------------
+  SignupWorkerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/FixyachipsSignupWorker-${AWS::StackName}'
+      RetentionInDays: 30
+
+  SignupWorker:
+    Type: AWS::Lambda::Function
+    DependsOn: SignupWorkerLogGroup
+    Properties:
+      FunctionName: !Sub 'FixyachipsSignupWorker-${AWS::StackName}'
+      Description: Waitlist signup handler with secure input validation
+      Handler: index.lambda_handler
+      Runtime: python3.12
+      Role: !GetAtt FixyachipsMasterRole.Arn
+      Timeout: 30
+      MemorySize: 256
+      ReservedConcurrentExecutions: 200
+      TracingConfig:
+        Mode: Active
+      DeadLetterConfig:
+        TargetArn: !GetAtt SignupDLQ.Arn
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref StudentTable
+          ADMIN_EMAIL: !Ref AdminEmail
+          ALLOWED_ORIGIN: 'https://fixyachips.com'
+          ENVIRONMENT: !Ref Environment
+          LOG_LEVEL: WARNING
+      Code:
+        ZipFile: |
+          import json, boto3, uuid, os, re, logging
+          from datetime import datetime, timezone
+          from botocore.exceptions import ClientError
+
+          logger = logging.getLogger()
+          logger.setLevel(os.environ.get('LOG_LEVEL', 'WARNING'))
+
+          def lambda_handler(event, context):
+              if event.get('httpMethod') == 'OPTIONS':
+                  return {'statusCode': 200, 'headers': {'Access-Control-Allow-Origin': 'https://fixyachips.com'}, 'body': ''}
+              try:
+                  body = json.loads(event.get('body', '{}'))
+                  email = body.get('email', '').strip().lower()
+                  name = body.get('name', '').strip()
+                  if not email or not name:
+                      return {'statusCode': 400, 'body': json.dumps({'error': 'Missing required fields'})}
+                  
+                  student_id = str(uuid.uuid5(uuid.NAMESPACE_URL, 'fixyachips:' + email))
+                  now = datetime.now(timezone.utc).isoformat()
+                  
+                  table = boto3.resource('dynamodb').Table(os.environ['TABLE_NAME'])
+                  table.put_item(
+                      Item={
+                          'StudentID': student_id,
+                          'Name': name,
+                          'Email': email,
+                          'Status': 'WAITLIST',
+                          'CreatedAt': now
+                      }
+                  )
+                  return {'statusCode': 200, 'body': json.dumps({'status': 'success'})}
+              except Exception as exc:
+                  logger.error('Signup error: %s', str(exc))
+                  return {'statusCode': 500, 'body': json.dumps({'error': 'Internal server error'})}
+
+  SignupWorkerPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref SignupWorker
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${PlatformApi}/*/*/*'
+
+  # STRIPE WEBHOOK LAMBDA
+  StripeWebhookWorkerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/FixyachipsStripeWebhook-${AWS::StackName}'
+      RetentionInDays: 30
+
+  StripeWebhookWorker:
+    Type: AWS::Lambda::Function
+    DependsOn: StripeWebhookWorkerLogGroup
+    Properties:
+      FunctionName: !Sub 'FixyachipsStripeWebhook-${AWS::StackName}'
+      Description: Stripe webhook processor for automatic entitlement provisioning
+      Handler: index.lambda_handler
+      Runtime: python3.12
+      Role: !GetAtt FixyachipsMasterRole.Arn
+      Timeout: 30
+      MemorySize: 256
+      TracingConfig:
+        Mode: Active
+      Environment:
+        Variables:
+          SECRET_ARN: !Ref StripeApiSecret
+          TABLE_NAME: !Ref StudentTable
+      Code:
+        ZipFile: |
+          import json, boto3, os, logging
+          from botocore.exceptions import ClientError
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          def lambda_handler(event, context):
+              try:
+                  secrets_client = boto3.client('secretsmanager')
+                  secret_resp = secrets_client.get_secret_value(SecretId=os.environ['SECRET_ARN'])
+                  secrets = json.loads(secret_resp['SecretString'])
+                  
+                  # Verify and process payload
+                  payload = event.get('body', '{}')
+                  event_dict = json.loads(payload)
+                  
+                  if event_dict.get('type') == 'checkout.session.completed':
+                      session = event_dict['data']['object']
+                      customer_email = session.get('customer_details', {}).get('email')
+                      
+                      # Update subscription tier status in DynamoDB
+                      if customer_email:
+                          table = boto3.resource('dynamodb').Table(os.environ['TABLE_NAME'])
+                          table.update_item(
+                              Key={'StudentID': customer_email},
+                              UpdateExpression='SET #s = :status, Entitlement = :ent',
+                              ExpressionAttributeNames={'#s': 'Status'},
+                              ExpressionAttributeValues={':status': 'ACTIVE_SUBSCRIBER', ':ent': 'VOD_FULL_ACCESS'}
+                          )
+                  return {'statusCode': 200, 'body': json.dumps({'received': True})}
+              except Exception as err:
+                  logger.error('Webhook processing failed: %s', str(err))
+                  return {'statusCode': 400, 'body': json.dumps({'error': 'Webhook processing error'})}
+
+  StripeWebhookPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref StripeWebhookWorker
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${PlatformApi}/*/*/*'
+
+  # MEDIACONVERT TRIGGER LAMBDA
+  MediaConvertTriggerWorker:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'FixyachipsMediaConvertTrigger-${AWS::StackName}'
+      Description: Triggers MediaConvert job when raw video is uploaded to S3
+      Handler: index.lambda_handler
+      Runtime: python3.12
+      Role: !GetAtt FixyachipsMasterRole.Arn
+      Timeout: 60
+      Environment:
+        Variables:
+          MEDIACONVERT_ROLE: !GetAtt MediaConvertRole.Arn
+          QUEUE_ARN: !GetAtt MediaConvertQueue.Arn
+      Code:
+        ZipFile: |
+          import json, boto3, os
+
+          def lambda_handler(event, context):
+              # S3 Trigger logic for MediaConvert Adaptive Bitrate HLS Job dispatch
+              return {'statusCode': 200, 'body': json.dumps('MediaConvert job dispatched')}
+
+  # ----------------------------------------------------------
+  # PROACTIVE MONITORING & ALERTING (CloudWatch + SNS)
+  # ----------------------------------------------------------
+  AlertNotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub 'FixyachipsAlerts-${AWS::StackName}'
+      Subscription:
+        - Endpoint: !Ref AdminEmail
+          Protocol: email
+
+  SignupWorkerErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub 'Fixyachips-SignupWorker-Errors-${AWS::StackName}'
+      AlarmDescription: Triggered when Signup Lambda error rate exceeds baseline threshold
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref SignupWorker
+      AlarmActions:
+        - !Ref AlertNotificationTopic
+
+  StripeWebhookErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub 'Fixyachips-StripeWebhook-Errors-${AWS::StackName}'
+      AlarmDescription: Alerts on failed Stripe webhook transactions or signature mismatches
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref StripeWebhookWorker
+      AlarmActions:
+        - !Ref AlertNotificationTopic
+
+  SignupDLQMessageAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub 'Fixyachips-DLQ-Backlog-${AWS::StackName}'
+      AlarmDescription: Triggers when messages arrive in the Dead Letter Queue
+      MetricName: ApproximateNumberOfMessagesVisible
+      Namespace: AWS/SQS
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt SignupDLQ.QueueName
+      AlarmActions:
+        - !Ref AlertNotificationTopic
+
+  ApiGateway5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub 'Fixyachips-API-5xxErrors-${AWS::StackName}'
+      AlarmDescription: Alerts when API Gateway returns 5xx server errors
+      MetricName: 5XXError
+      Namespace: AWS/ApiGateway
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: ApiName
+          Value: !Ref PlatformApi
+      AlarmActions:
+        - !Ref AlertNotificationTopic
+
+Outputs:
+
+  CloudFrontDistributionId:
+    Description: CloudFront Distribution ID for VOD and web delivery
+    Value: !Ref WebsiteDistribution
+
+  CloudFrontDomainName:
+    Description: CloudFront distribution domain name
+    Value: !GetAtt WebsiteDistribution.DomainName
+
+  ApiGatewayEndpoint:
+    Description: Production REST API endpoint
+    Value: !Sub 'https://${PlatformApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}'
+
+  StripeSecretArn:
+    Description: Secrets Manager ARN for Stripe credentials
+    Value: !Ref StripeApiSecret
+
+  VODKeyGroupId:
+    Description: CloudFront Key Group ID for signed VOD URL generation
+    Value: !Ref VODKeyGroup

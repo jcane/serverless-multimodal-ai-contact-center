@@ -1,0 +1,99 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Fixyachips Global: VOD, Multi-Language AI, and Rekognition'
+Parameters:
+  AdminEmail:
+    Type: String
+    Default: 'info@fixyachips.com'
+Resources:
+  MasterVideoBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Sub 'fixyachips-masters-${AWS::AccountId}'
+  StreamingVideoBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Sub 'fixyachips-streaming-${AWS::AccountId}'
+  ManualsBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Sub 'fixyachips-manuals-${AWS::AccountId}'
+  CloudFrontOAC:
+    Type: 'AWS::CloudFront::OriginAccessControl'
+    Properties:
+      OriginAccessControlConfig:
+        Description: 'OAC for Fixyachips'
+        Name: !Sub 'FixyachipsOAC-${AWS::StackName}'
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+  StreamingDistribution:
+    Type: 'AWS::CloudFront::Distribution'
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt StreamingVideoBucket.DomainName
+            OriginAccessControlId: !GetAtt CloudFrontOAC.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+  StudentTable:
+    Type: 'AWS::DynamoDB::Table'
+    Properties:
+      TableName: !Sub 'FixyachipsStudents-${AWS::StackName}'
+      AttributeDefinitions:
+        - AttributeName: StudentID
+          AttributeType: S
+      KeySchema:
+        - AttributeName: StudentID
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+  FixyachipsMasterRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: [lambda.amazonaws.com]
+            Action: ['sts:AssumeRole']
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: FixyachipsAIPowerhouse
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:*'
+                  - 'dynamodb:*'
+                  - 'rekognition:*'
+                  - 'transcribe:*'
+                  - 'polly:*'
+                  - 'translate:*'
+                  - 'bedrock:*'
+                  - 'ses:SendEmail'
+                Resource: '*'
+  SafetyBudget:
+    Type: 'AWS::Budgets::Budget'
+    Properties:
+      Budget:
+        BudgetName: !Sub 'FixyachipsBudget-${AWS::StackName}'
+        BudgetLimit: { Amount: 100, Unit: USD }
+        TimeUnit: MONTHLY
+        BudgetType: COST
+      NotificationsWithSubscribers:
+        - Notification: { NotificationType: ACTUAL, ComparisonOperator: GREATER_THAN, Threshold: 80 }
+          Subscribers: [{ Address: !Ref AdminEmail, SubscriptionType: EMAIL }]
+Outputs:
+  CloudFrontURL:
+    Value: !GetAtt StreamingDistribution.DomainName
+  ManualsStorage:
+    Value: !Ref ManualsBucket

@@ -1,0 +1,30 @@
+# Terraform
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.backup
+*.tfstate.lock.info
+.terraform.tfvars
+terraform.tfvars
+*.tfvars
+
+# Secrets - never commit these
+*.pem
+*.key
+.env
+.env.*
+credentials
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# AWS SAM
+.aws-sam/

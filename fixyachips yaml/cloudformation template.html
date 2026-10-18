@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<meta http-equiv="content-type" content="text/html; charset=utf-8"/>
+	<title></title>
+	<meta name="generator" content="LibreOffice 24.2.7.2 (Linux)"/>
+	<meta name="created" content="2026-02-22T01:06:48.383247764"/>
+	<meta name="changed" content="2026-02-22T01:09:35.683011802"/>
+	<style type="text/css">
+		@page { margin: 0.79in }
+		p { margin-bottom: 0.1in }
+	</style>
+</head>
+<body lang="en-US" dir="ltr"><p style="line-height: 100%; margin-bottom: 0in">
+AWSTemplateFormatVersion: '2010-09-09'</p>
+<p style="line-height: 100%; margin-bottom: 0in">Description:
+'Fixyachips Global: Unified VOD, AI, Security, and Cost Management
+Stack'</p>
+<p style="line-height: 100%; margin-bottom: 0in"><br/>
+
+</p>
+<p style="line-height: 100%; margin-bottom: 0in">Parameters:</p>
+<p style="line-height: 100%; margin-bottom: 0in">  AdminEmail:</p>
+<p style="line-height: 100%; margin-bottom: 0in">    Type: String</p>
+<p style="line-height: 100%; margin-bottom: 0in">    Default:
+'info@fixyachips.com'</p>
+<p style="line-height: 100%; margin-bottom: 0in">    Description:
+'Email for billing alerts and student support notifications'</p>
+<p style="line-height: 100%; margin-bottom: 0in"><br/>
+
+</p>
+<p style="line-height: 100%; margin-bottom: 0in">Resources:</p>
+<p style="line-height: 100%; margin-bottom: 0in">  # --- 1. STORAGE &amp;
+DELIVERY ---</p>
+<p style="line-height: 100%; margin-bottom: 0in">  SourceBucket:</p>
+<p style="line-height: 100%; margin-bottom: 0in">    Type:
+'AWS::S3::Bucket'</p>
+<p style="line-height: 100%; margin-bottom: 0in">    Properties:</p>
+<p style="line-height: 100%; margin-bottom: 0in">      BucketName:
+!Sub 'fixyachips-masters-${AWS::AccountId}'</p>
+<p style="line-height: 100%; margin-bottom: 0in"><br/>
+
+</p>
+<p style="line-height: 100%; margin-bottom: 0in">  OutputBucket:</p>
+<p style="line-height: 100%; margin-bottom: 0in">    Type:
+'AWS::S3::Bucket'</p>
+<p style="line-height: 100%; margin-bottom: 0in">    Properties:</p>
+<p style="line-height: 100%; margin-bottom: 0in">      BucketName:
+!Sub 'fixyachips-streaming-${AWS::AccountId}'</p>
+<p style="line-height: 100%; margin-bottom: 0in"><br/>
+
+</p>
+<p style="line-height: 100%; margin-bottom: 0in">  CloudFrontOAC:</p>
+<p style="line-height: 100%; margin-bottom: 0in">    Type:
+'AWS::CloudFront::OriginAccessControl'</p>
+<p style="line-height: 100%; margin-bottom: 0in">    Properties:</p>
+<p style="line-height: 100%; margin-bottom: 0in">     
+OriginAccessControlConfig:</p>
+<p style="line-height: 100%; margin-bottom: 0in">        Description:
+'Security gate for streaming content'</p>
+<p style="line-height: 100%; margin-bottom: 0in">        Name: !Sub
+'FixyachipsOAC-${AWS::StackName}'</p>
+<p style="line-height: 100%; margin-bottom: 0in">       
+OriginAccessControlOriginType: s3</p>
+<p style="line-height: 100%; margin-bottom: 0in">       
+SigningBehavior: always</p>
+<p style="line-height: 100%; margin-bottom: 0in">       
+SigningProtocol: sigv4</p>
+<p style="line-height: 100%; margin-bottom: 0in"><br/>
+
+</p>
+<p style="line-height: 100%; margin-bottom: 0in"> 
+StreamingDistribution:</p>
+<p style="line-height: 100%; margin-bottom: 0in">    Type:
+'AWS::CloudFront::Distribution'</p>
+<p style="line-height: 100%; margin-bottom: 0in">    Properties:</p>
+<p style="line-height: 100%; margin-bottom: 0in">     
+DistributionConfig:</p>
+<p style="line-height: 100%; margin-bottom: 0in">        Enabled:
+true</p>
+<p style="line-height: 100%; margin-bottom: 0in">        Origins:</p>
+<p style="line-height: 100%; margin-bottom: 0in">          - Id:
+S3StreamingOrigin</p>
+<p style="line-height: 100%; margin-bottom: 0in">           
+DomainName: !GetAtt OutputBucket.DomainName</p>
+<p style="line-height: 100%; margin-bottom: 0in">           
+OriginAccessControlId: !GetAtt CloudFrontOAC.Id</p>
+<p style="line-height: 100%; margin-bottom: 0in">           
+S3OriginConfig:</p>
+<p style="line-height: 100%; margin-bottom: 0in">             
+OriginAccessIdentity: ''</p>
+<p style="line-height: 100%; margin-bottom: 0in">       
+DefaultCacheBehavior:</p>
+<p style="line-height: 100%; margin-bottom: 0in">         
+TargetOriginId: S3StreamingOrigin</p>
+<p style="line-height: 100%; margin-bottom: 0in">         
+ViewerProtocolPolicy: redirect-to-https</p>
+<p style="line-height: 100%; margin-bottom: 0in">         
+AllowedMethods:</p>
+<p style="line-height: 100%; margin-bottom: 0in">            - GET</p>
+<p style="line-height: 100%; margin-bottom: 0in">            - HEAD</p>
+<p style="line-height: 100%; margin-bottom: 0in"><br/>
+
+</p>
+<p style="line-height: 100%; margin-bottom: 0in">  # --- 2. IDENTITY
+&amp; DATA ---</p>
+<p style="line-height: 100%; margin-bottom: 0in">  StudentUserPool:</p>
+<p style="line-height: 100%; margin-bottom: 0in">    Type:
+'AWS::Cognito::UserPool'</p>
+<p style="line-height: 100%; margin-bottom: 0in">    Properties:</p>
+<p style="line-height: 100%; margin-bottom: 0in">      UserPoolName:
+FixyachipsAcademyUsers</p>
+<p style="line-height: 100%; margin-bottom: 0in">     
+UsernameAttributes:</p>
+<p style="line-height: 100%; margin-bottom: 0in">        - email</p>
+<p style="line-height: 100%; margin-bottom: 0in">     
+AutoVerifiedAttributes:</p>
+<p style="line-height: 100%; margin-bottom: 0in">        - email</p>
+<p style="line-height: 100%; margin-bottom: 0in"><br/>
+
+</p>
+<p style="line-height: 100%; margin-bottom: 0in">  GlobalDataTable:</p>
+<p style="line-height: 100%; margin-bottom: 0in">    Type:
+'AWS::DynamoDB::Table'</p>
+<p style="line-height: 100%; margin-bottom: 0in">    Properties:</p>
+<p style="line-height: 100%; margin-bottom: 0in">      TableName:
+!Sub 'FixyachipsData-${AWS::StackName}'</p>
+<p style="line-height: 100%; margin-bottom: 0in">     
+AttributeDefinitions:</p>
+<p style="line-height: 100%; margin-bottom: 0in">        -
+AttributeName: PK</p>
+<p style="line-height: 100%; margin-bottom: 0in">         
+AttributeType: S</p>
+<p style="line-height: 100%; margin-bottom: 0in">      KeySchema:</p>
+<p style="line-height: 100%; margin-bottom: 0in">        -
+AttributeName: PK</p>
+<p style="line-height: 100%; margin-bottom: 0in">          KeyType:
+HASH</p>
+<p style="line-height: 100%; margin-bottom: 0in">      BillingMode:
+PAY_PER_REQUEST</p>
+<p style="line-height: 100%; margin-bottom: 0in"><br/>
+
+</p>
+<p style="line-height: 100%; margin-bottom: 0in">  # --- 3. THE BRAIN
+&amp; AI ---</p>
+<p style="line-height: 100%; margin-bottom: 0in"> 
+LambdaExecutionRole:</p>
+<p style="line-height: 100%; margin-bottom: 0in">    Type:
+'AWS::IAM::Role'</p>
+<p style="line-height: 100%; margin-bottom: 0in">    Properties:</p>
+<p style="line-height: 100%; margin-bottom: 0in">     
+AssumeRolePolicyDocument:</p>
+<p style="line-height: 100%; margin-bottom: 0in">        Version:
+'2012-10-17'</p>
+<p style="line-height: 100%; margin-bottom: 0in">        Statement:</p>
+<p style="line-height: 100%; margin-bottom: 0in">          - Effect:
+Allow</p>
+<p style="line-height: 100%; margin-bottom: 0in">           
+Principal:</p>
+<p style="line-height: 100%; margin-bottom: 0in">             
+Service:</p>
+<p style="line-height: 100%; margin-bottom: 0in">                -
+lambda.amazonaws.com</p>
+<p style="line-height: 100%; margin-bottom: 0in">            Action:</p>
+<p style="line-height: 100%; margin-bottom: 0in">              -
+'sts:AssumeRole'</p>
+<p style="line-height: 100%; margin-bottom: 0in">     
+ManagedPolicyArns:</p>
+<p style="line-height: 100%; margin-bottom: 0in">        -
+'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'</p>
+<p style="line-height: 100%; margin-bottom: 0in">      Policies:</p>
+<p style="line-height: 100%; margin-bottom: 0in">        -
+PolicyName: FixyachipsAIAccess</p>
+<p style="line-height: 100%; margin-bottom: 0in">         
+PolicyDocument:</p>
+<p style="line-height: 100%; margin-bottom: 0in">            Version:
+'2012-10-17'</p>
+<p style="line-height: 100%; margin-bottom: 0in">           
+Statement:</p>
+<p style="line-height: 100%; margin-bottom: 0in">              -
+Effect: Allow</p>
+<p style="line-height: 100%; margin-bottom: 0in">               
+Action:</p>
+<p style="line-height: 100%; margin-bottom: 0in">                  -
+'rekognition:*'</p>
+<p style="line-height: 100%; margin-bottom: 0in">                  -
+'transcribe:*'</p>
+<p style="line-height: 100%; margin-bottom: 0in">                  -
+'bedrock:InvokeModel'</p>
+<p style="line-height: 100%; margin-bottom: 0in">                  -
+'dynamodb:*'</p>
+<p style="line-height: 100%; margin-bottom: 0in">                  -
+'ses:SendEmail'</p>
+<p style="line-height: 100%; margin-bottom: 0in">               
+Resource: '*'</p>
+<p style="line-height: 100%; margin-bottom: 0in"><br/>
+
+</p>
+<p style="line-height: 100%; margin-bottom: 0in"> 
+FixyachipsMasterLambda:</p>
+<p style="line-height: 100%; margin-bottom: 0in">    Type:
+'AWS::Lambda::Function'</p>
+<p style="line-height: 100%; margin-bottom: 0in">    Properties:</p>
+<p style="line-height: 100%; margin-bottom: 0in">      FunctionName:
+!Sub 'FixyachipsCore-${AWS::StackName}'</p>
+<p style="line-height: 100%; margin-bottom: 0in">      Handler:
+index.handler</p>
+<p style="line-height: 100%; margin-bottom: 0in">      Runtime:
+python3.9</p>
+<p style="line-height: 100%; margin-bottom: 0in">      Role: !GetAtt
+LambdaExecutionRole.Arn</p>
+<p style="line-height: 100%; margin-bottom: 0in">      Code:</p>
+<p style="line-height: 100%; margin-bottom: 0in">        ZipFile: |</p>
+<p style="line-height: 100%; margin-bottom: 0in">          def
+handler(event, context):</p>
+<p style="line-height: 100%; margin-bottom: 0in">              return
+{&quot;status&quot;: &quot;Fixyachips Engine Online&quot;}</p>
+<p style="line-height: 100%; margin-bottom: 0in"><br/>
+
+</p>
+<p style="line-height: 100%; margin-bottom: 0in">  # --- 4. FINANCIAL
+GUARDRAILS ---</p>
+<p style="line-height: 100%; margin-bottom: 0in">  MonthlyBudget:</p>
+<p style="line-height: 100%; margin-bottom: 0in">    Type:
+'AWS::Budgets::Budget'</p>
+<p style="line-height: 100%; margin-bottom: 0in">    Properties:</p>
+<p style="line-height: 100%; margin-bottom: 0in">      Budget:</p>
+<p style="line-height: 100%; margin-bottom: 0in">        BudgetName:
+!Sub 'FixyachipsBudget-${AWS::StackName}'</p>
+<p style="line-height: 100%; margin-bottom: 0in">        BudgetLimit:</p>
+<p style="line-height: 100%; margin-bottom: 0in">          Amount:
+100</p>
+<p style="line-height: 100%; margin-bottom: 0in">          Unit: USD</p>
+<p style="line-height: 100%; margin-bottom: 0in">        TimeUnit:
+MONTHLY</p>
+<p style="line-height: 100%; margin-bottom: 0in">        BudgetType:
+COST</p>
+<p style="line-height: 100%; margin-bottom: 0in">     
+NotificationsWithSubscribers:</p>
+<p style="line-height: 100%; margin-bottom: 0in">        -
+Notification:</p>
+<p style="line-height: 100%; margin-bottom: 0in">           
+NotificationType: ACTUAL</p>
+<p style="line-height: 100%; margin-bottom: 0in">           
+ComparisonOperator: GREATER_THAN</p>
+<p style="line-height: 100%; margin-bottom: 0in">           
+Threshold: 80</p>
+<p style="line-height: 100%; margin-bottom: 0in">         
+Subscribers:</p>
+<p style="line-height: 100%; margin-bottom: 0in">            -
+Address: !Ref AdminEmail</p>
+<p style="line-height: 100%; margin-bottom: 0in">             
+SubscriptionType: EMAIL</p>
+<p style="line-height: 100%; margin-bottom: 0in"><br/>
+
+</p>
+<p style="line-height: 100%; margin-bottom: 0in">Outputs:</p>
+<p style="line-height: 100%; margin-bottom: 0in">  AcademyURL:</p>
+<p style="line-height: 100%; margin-bottom: 0in">    Description:
+'The CloudFront URL for your global video streaming'</p>
+<p style="line-height: 100%; margin-bottom: 0in">    Value: !GetAtt
+StreamingDistribution.DomainName</p>
+<p style="line-height: 100%; margin-bottom: 0in">  MasterBucket:</p>
+<p style="line-height: 100%; margin-bottom: 0in">    Description:
+'The S3 bucket where you upload your raw 4K videos'</p>
+<p style="line-height: 100%; margin-bottom: 0in">    Value: !Ref
+SourceBucket</p>
+</body>
+</html>

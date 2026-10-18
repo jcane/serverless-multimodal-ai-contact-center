@@ -1,0 +1,760 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Fixyachips Global v4.1: COMPLETE STACK - OAC, Origin Shield, WAF, AI Suite, Signup API, Paywall-Ready, VOD, Multilingual, Custom Domain, SSL'
+Parameters:
+  AdminEmail:
+    Type: String
+    Default: 'info@fixyachips.com'
+  DomainName:
+    Type: String
+    Default: 'fixyachips.com'
+  WWWDomainName:
+    Type: String
+    Default: 'www.fixyachips.com'
+  CertificateArn:
+    Type: String
+    Description: 'ACM Certificate ARN - MUST be in us-east-1'
+  OriginShieldRegion:
+    Type: String
+    Default: 'us-east-1'
+    AllowedValues:
+      - us-east-1
+      - us-east-2
+      - us-west-2
+      - ap-southeast-1
+      - ap-northeast-1
+      - eu-west-1
+      - eu-central-1
+      - sa-east-1
+Resources:
+  EmpireOAC:
+    Type: 'AWS::CloudFront::OriginAccessControl'
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub 'Empire-OAC-${AWS::StackName}'
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+  WebBodyguard:
+    Type: 'AWS::WAFv2::WebACL'
+    Properties:
+      Name: !Sub 'FixyachipsShield-${AWS::StackName}'
+      Scope: CLOUDFRONT
+      DefaultAction: { Allow: {} }
+      VisibilityConfig:
+        SampledRequestsEnabled: true
+        CloudWatchMetricsEnabled: true
+        MetricName: FixyachipsWAF
+      Rules:
+        - Name: AWS-AWSManagedRulesCommonRuleSet
+          Priority: 0
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesCommonRuleSet
+          OverrideAction: { None: {} }
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: CommonRules
+        - Name: AWS-AWSManagedRulesBotControlRuleSet
+          Priority: 1
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesBotControlRuleSet
+              ManagedRuleGroupConfigs:
+                - AWSManagedRulesBotControlRuleSet:
+                    InspectionLevel: COMMON
+          OverrideAction: { None: {} }
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: BotControl
+        - Name: RateLimitRule
+          Priority: 2
+          Statement:
+            RateBasedStatement:
+              Limit: 2000
+              AggregateKeyType: IP
+          Action: { Block: {} }
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: RateLimit
+        - Name: AWS-AWSManagedRulesSQLiRuleSet
+          Priority: 3
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesSQLiRuleSet
+          OverrideAction: { None: {} }
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: SQLiRules
+  WebsiteRouterFunction:
+    Type: 'AWS::CloudFront::Function'
+    Properties:
+      Name: !Sub 'FixRouter-${AWS::StackName}'
+      AutoPublish: true
+      FunctionConfig:
+        Comment: 'Clean URLs and path traversal protection'
+        Runtime: 'cloudfront-js-1.0'
+      FunctionCode: |
+        function handler(event) {
+          var request = event.request;
+          var uri = request.uri;
+          if (uri.indexOf('..') !== -1) {
+            return { statusCode: 403, statusDescription: 'Forbidden' };
+          }
+          if (uri.endsWith('/')) {
+            request.uri += 'index.html';
+          } else if (!uri.includes('.')) {
+            request.uri += '.html';
+          }
+          return request;
+        }
+  StreamingVideoBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Sub 'fixyachips-platform-${AWS::AccountId}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: CleanOldVersions
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 90
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ['*']
+            AllowedMethods: [GET, POST, PUT]
+            AllowedOrigins:
+              - 'https://fixyachips.com'
+              - 'https://www.fixyachips.com'
+            MaxAge: 3600
+  CloudFrontLogsBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Sub 'fixyachips-cf-logs-${AWS::AccountId}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldLogs
+            Status: Enabled
+            ExpirationInDays: 90
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerPreferred
+  BucketPolicy:
+    Type: 'AWS::S3::BucketPolicy'
+    Properties:
+      Bucket: !Ref StreamingVideoBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudFrontOACOnly
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: 's3:GetObject'
+            Resource: !Sub 'arn:aws:s3:::${StreamingVideoBucket}/*'
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${WebsiteDistribution}'
+          - Sid: DenyNonHTTPS
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !Sub 'arn:aws:s3:::${StreamingVideoBucket}'
+              - !Sub 'arn:aws:s3:::${StreamingVideoBucket}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+  LogsBucketPolicy:
+    Type: 'AWS::S3::BucketPolicy'
+    Properties:
+      Bucket: !Ref CloudFrontLogsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudFrontLogDelivery
+            Effect: Allow
+            Principal:
+              Service: delivery.logs.amazonaws.com
+            Action: 's3:PutObject'
+            Resource: !Sub 'arn:aws:s3:::${CloudFrontLogsBucket}/cloudfront-logs/*'
+          - Sid: DenyNonHTTPS
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !Sub 'arn:aws:s3:::${CloudFrontLogsBucket}'
+              - !Sub 'arn:aws:s3:::${CloudFrontLogsBucket}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+  VODCachePolicy:
+    Type: 'AWS::CloudFront::CachePolicy'
+    Properties:
+      CachePolicyConfig:
+        Name: !Sub 'VODCachePolicy-${AWS::StackName}'
+        Comment: 'Cache policy for HLS/DASH/VOD video segments'
+        DefaultTTL: 86400
+        MaxTTL: 31536000
+        MinTTL: 0
+        ParametersInCacheKeyAndForwardedToOrigin:
+          EnableAcceptEncodingBrotli: false
+          EnableAcceptEncodingGzip: false
+          HeadersConfig:
+            HeaderBehavior: none
+          QueryStringsConfig:
+            QueryStringBehavior: none
+          CookiesConfig:
+            CookieBehavior: none
+  WebCachePolicy:
+    Type: 'AWS::CloudFront::CachePolicy'
+    Properties:
+      CachePolicyConfig:
+        Name: !Sub 'WebCachePolicy-${AWS::StackName}'
+        Comment: 'Cache policy for HTML pages and static assets'
+        DefaultTTL: 3600
+        MaxTTL: 86400
+        MinTTL: 0
+        ParametersInCacheKeyAndForwardedToOrigin:
+          EnableAcceptEncodingBrotli: true
+          EnableAcceptEncodingGzip: true
+          HeadersConfig:
+            HeaderBehavior: none
+          QueryStringsConfig:
+            QueryStringBehavior: none
+          CookiesConfig:
+            CookieBehavior: none
+  VODOriginRequestPolicy:
+    Type: 'AWS::CloudFront::OriginRequestPolicy'
+    Properties:
+      OriginRequestPolicyConfig:
+        Name: !Sub 'VODOriginRequestPolicy-${AWS::StackName}'
+        Comment: 'Origin request policy for VOD content'
+        HeadersConfig:
+          HeaderBehavior: none
+        QueryStringsConfig:
+          QueryStringBehavior: none
+        CookiesConfig:
+          CookieBehavior: none
+  VODResponseHeadersPolicy:
+    Type: 'AWS::CloudFront::ResponseHeadersPolicy'
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: !Sub 'VODResponseHeadersPolicy-${AWS::StackName}'
+        Comment: 'Security headers and CORS for all responses'
+        SecurityHeadersConfig:
+          FrameOptions:
+            FrameOption: DENY
+            Override: true
+          ContentTypeOptions:
+            Override: true
+          StrictTransportSecurity:
+            AccessControlMaxAgeSec: 31536000
+            IncludeSubdomains: true
+            Preload: true
+            Override: true
+          ReferrerPolicy:
+            ReferrerPolicy: strict-origin-when-cross-origin
+            Override: true
+          ContentSecurityPolicy:
+            ContentSecurityPolicy: "default-src 'self' https://fixyachips.com https://www.fixyachips.com; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; media-src 'self' https://fixyachips.com https://www.fixyachips.com; connect-src 'self' https://*.amazonaws.com; font-src 'self' data:;"
+            Override: true
+          XSSProtection:
+            ModeBlock: true
+            Protection: true
+            Override: true
+        CorsConfig:
+          AccessControlAllowCredentials: false
+          AccessControlAllowHeaders:
+            Items:
+              - 'Content-Type'
+              - 'Authorization'
+              - 'Range'
+          AccessControlAllowMethods:
+            Items:
+              - GET
+              - HEAD
+              - OPTIONS
+          AccessControlAllowOrigins:
+            Items:
+              - 'https://fixyachips.com'
+              - 'https://www.fixyachips.com'
+          AccessControlMaxAgeSec: 3600
+          OriginOverride: true
+  WebsiteDistribution:
+    Type: 'AWS::CloudFront::Distribution'
+    DependsOn:
+      - EmpireOAC
+      - WebBodyguard
+      - VODCachePolicy
+      - WebCachePolicy
+      - VODOriginRequestPolicy
+      - VODResponseHeadersPolicy
+      - CloudFrontLogsBucket
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        PriceClass: PriceClass_All
+        DefaultRootObject: index.html
+        Comment: !Sub 'Fixyachips Global Distribution - ${AWS::StackName}'
+        Aliases:
+          - !Ref DomainName
+          - !Ref WWWDomainName
+        ViewerCertificate:
+          AcmCertificateArn: !Ref CertificateArn
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2021
+        WebACLId: !GetAtt WebBodyguard.Arn
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        Logging:
+          Bucket: !GetAtt CloudFrontLogsBucket.DomainName
+          Prefix: 'cloudfront-logs/'
+          IncludeCookies: false
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt StreamingVideoBucket.RegionalDomainName
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+            OriginAccessControlId: !GetAtt EmpireOAC.Id
+            OriginShield:
+              Enabled: true
+              OriginShieldRegion: !Ref OriginShieldRegion
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          CachePolicyId: !Ref WebCachePolicy
+          ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD, OPTIONS]
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+        CacheBehaviors:
+          - PathPattern: '/hls/*'
+            TargetOriginId: S3Origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: false
+            CachePolicyId: !Ref VODCachePolicy
+            OriginRequestPolicyId: !Ref VODOriginRequestPolicy
+            ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD]
+          - PathPattern: '/dash/*'
+            TargetOriginId: S3Origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: false
+            CachePolicyId: !Ref VODCachePolicy
+            OriginRequestPolicyId: !Ref VODOriginRequestPolicy
+            ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD]
+          - PathPattern: '/vod/*'
+            TargetOriginId: S3Origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: false
+            CachePolicyId: !Ref VODCachePolicy
+            OriginRequestPolicyId: !Ref VODOriginRequestPolicy
+            ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD]
+          - PathPattern: '/es/*'
+            TargetOriginId: S3Origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            CachePolicyId: !Ref WebCachePolicy
+            ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+            AllowedMethods: [GET, HEAD]
+            CachedMethods: [GET, HEAD]
+            FunctionAssociations:
+              - EventType: viewer-request
+                FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+          - PathPattern: '/pt/*'
+            TargetOriginId: S3Origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            CachePolicyId: !Ref WebCachePolicy
+            ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+            AllowedMethods: [GET, HEAD]
+            CachedMethods: [GET, HEAD]
+            FunctionAssociations:
+              - EventType: viewer-request
+                FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+          - PathPattern: '/fr/*'
+            TargetOriginId: S3Origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            CachePolicyId: !Ref WebCachePolicy
+            ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+            AllowedMethods: [GET, HEAD]
+            CachedMethods: [GET, HEAD]
+            FunctionAssociations:
+              - EventType: viewer-request
+                FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+          - PathPattern: '/it/*'
+            TargetOriginId: S3Origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            CachePolicyId: !Ref WebCachePolicy
+            ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+            AllowedMethods: [GET, HEAD]
+            CachedMethods: [GET, HEAD]
+            FunctionAssociations:
+              - EventType: viewer-request
+                FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+          - PathPattern: '/de/*'
+            TargetOriginId: S3Origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            CachePolicyId: !Ref WebCachePolicy
+            ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+            AllowedMethods: [GET, HEAD]
+            CachedMethods: [GET, HEAD]
+            FunctionAssociations:
+              - EventType: viewer-request
+                FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+          - PathPattern: '/pl/*'
+            TargetOriginId: S3Origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            CachePolicyId: !Ref WebCachePolicy
+            ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+            AllowedMethods: [GET, HEAD]
+            CachedMethods: [GET, HEAD]
+            FunctionAssociations:
+              - EventType: viewer-request
+                FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+          - PathPattern: '/sv/*'
+            TargetOriginId: S3Origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            CachePolicyId: !Ref WebCachePolicy
+            ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+            AllowedMethods: [GET, HEAD]
+            CachedMethods: [GET, HEAD]
+            FunctionAssociations:
+              - EventType: viewer-request
+                FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: '/index.html'
+            ErrorCachingMinTTL: 10
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: '/index.html'
+            ErrorCachingMinTTL: 10
+          - ErrorCode: 500
+            ResponseCode: 503
+            ResponsePagePath: '/en/error.html'
+            ErrorCachingMinTTL: 5
+        Restrictions:
+          GeoRestriction:
+            RestrictionType: none
+  StudentTable:
+    Type: 'AWS::DynamoDB::Table'
+    DeletionPolicy: Retain
+    Properties:
+      TableName: !Sub 'FixyachipsStudents-${AWS::StackName}'
+      AttributeDefinitions:
+        - AttributeName: StudentID
+          AttributeType: S
+      KeySchema:
+        - AttributeName: StudentID
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+      SSESpecification:
+        SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+  FixyachipsMasterRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Sub 'FixyachipsMasterRole-${AWS::StackName}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: [lambda.amazonaws.com] }
+            Action: ['sts:AssumeRole']
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: FixyachipsAIPowerhouse
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                  - 's3:PutObject'
+                  - 's3:DeleteObject'
+                  - 's3:ListBucket'
+                Resource:
+                  - !Sub 'arn:aws:s3:::${StreamingVideoBucket}'
+                  - !Sub 'arn:aws:s3:::${StreamingVideoBucket}/*'
+              - Effect: Allow
+                Action:
+                  - 'dynamodb:GetItem'
+                  - 'dynamodb:PutItem'
+                  - 'dynamodb:UpdateItem'
+                  - 'dynamodb:DeleteItem'
+                  - 'dynamodb:Query'
+                  - 'dynamodb:Scan'
+                Resource:
+                  - !GetAtt StudentTable.Arn
+                  - !Sub '${StudentTable.Arn}/index/*'
+              - Effect: Allow
+                Action:
+                  - 'ses:SendEmail'
+                  - 'ses:SendRawEmail'
+                Resource:
+                  - !Sub 'arn:aws:ses:${AWS::Region}:${AWS::AccountId}:identity/${AdminEmail}'
+              - Effect: Allow
+                Action:
+                  - 'bedrock:InvokeModel'
+                  - 'bedrock:InvokeModelWithResponseStream'
+                  - 'transcribe:StartTranscriptionJob'
+                  - 'transcribe:GetTranscriptionJob'
+                  - 'translate:TranslateText'
+                  - 'polly:SynthesizeSpeech'
+                Resource: '*'
+              - Effect: Deny
+                Action:
+                  - 'iam:*'
+                  - 'sts:AssumeRole'
+                  - 'organizations:*'
+                Resource: '*'
+  SignupWorker:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      FunctionName: !Sub 'FixyachipsSignupWorker-${AWS::StackName}'
+      Handler: index.lambda_handler
+      Runtime: python3.12
+      Role: !GetAtt FixyachipsMasterRole.Arn
+      Timeout: 30
+      ReservedConcurrentExecutions: 50
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref StudentTable
+          ADMIN_EMAIL: !Ref AdminEmail
+          ALLOWED_ORIGIN: !Sub 'https://${DomainName}'
+      Code:
+        ZipFile: |
+          import json, boto3, uuid, os, re
+          dynamodb = boto3.resource('dynamodb')
+          ses = boto3.client('ses')
+          table = dynamodb.Table(os.environ['TABLE_NAME'])
+          ALLOWED_ORIGIN = os.environ.get('ALLOWED_ORIGIN', 'https://fixyachips.com')
+          def is_valid_email(email):
+              pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+              return re.match(pattern, email) is not None
+          def sanitize(value, max_length=200):
+              if not isinstance(value, str):
+                  return ''
+              return re.sub(r'[<>"';]', '', value.strip())[:max_length]
+          def lambda_handler(event, context):
+              cors_headers = {
+                  'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
+                  'Access-Control-Allow-Headers': 'Content-Type',
+                  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+                  'Content-Type': 'application/json'
+              }
+              if event.get('httpMethod') == 'OPTIONS':
+                  return {'statusCode': 200, 'headers': cors_headers, 'body': ''}
+              try:
+                  body = json.loads(event.get('body') or '{}')
+                  email = sanitize(body.get('email', '').lower())
+                  name = sanitize(body.get('name', ''))
+                  industry = sanitize(body.get('industry', 'unknown'))
+                  source = sanitize(body.get('source', 'website'))
+                  if not email or not name:
+                      return {'statusCode': 400, 'headers': cors_headers, 'body': json.dumps({'error': 'Name and email are required'})}
+                  if not is_valid_email(email):
+                      return {'statusCode': 400, 'headers': cors_headers, 'body': json.dumps({'error': 'Invalid email address'})}
+                  table.put_item(Item={
+                      'StudentID': str(uuid.uuid4()),
+                      'Name': name,
+                      'Email': email,
+                      'Status': 'WAITLIST',
+                      'Source': source,
+                      'Industry': industry
+                  })
+                  ses.send_email(
+                      Source=os.environ['ADMIN_EMAIL'],
+                      Destination={'ToAddresses': [email]},
+                      Message={
+                          'Subject': {'Data': 'Welcome to the No-Drill Revolution - Fixyachips Academy'},
+                          'Body': {'Text': {'Data': 'Hello ' + name + ',\n\nYou are now on the waitlist for Fixyachips Global Academy.\n\nJoshua Cane\nFounder, Fixyachips Global Academy'}}
+                      }
+                  )
+                  ses.send_email(
+                      Source=os.environ['ADMIN_EMAIL'],
+                      Destination={'ToAddresses': [os.environ['ADMIN_EMAIL']]},
+                      Message={
+                          'Subject': {'Data': 'New Waitlist Signup: ' + name},
+                          'Body': {'Text': {'Data': 'New signup:\nName: ' + name + '\nEmail: ' + email + '\nIndustry: ' + industry}}
+                      }
+                  )
+                  return {'statusCode': 200, 'headers': cors_headers, 'body': json.dumps({'status': 'success', 'message': 'Welcome to the revolution!'})}
+              except Exception as e:
+                  print('ERROR: ' + str(e))
+                  return {'statusCode': 500, 'headers': cors_headers, 'body': json.dumps({'error': 'Signup failed. Please try again.'})}
+  SignupWorkerLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/FixyachipsSignupWorker-${AWS::StackName}'
+      RetentionInDays: 30
+  SignupAPI:
+    Type: 'AWS::ApiGateway::RestApi'
+    Properties:
+      Name: !Sub 'FixyachipsAPI-${AWS::StackName}'
+      Description: 'Fixyachips Signup and Course API'
+  ApiResource:
+    Type: 'AWS::ApiGateway::Resource'
+    Properties:
+      ParentId: !GetAtt SignupAPI.RootResourceId
+      PathPart: 'signup'
+      RestApiId: !Ref SignupAPI
+  ApiMethod:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: POST
+      ResourceId: !Ref ApiResource
+      RestApiId: !Ref SignupAPI
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${SignupWorker.Arn}/invocations'
+  ApiOptionsMethod:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: OPTIONS
+      ResourceId: !Ref ApiResource
+      RestApiId: !Ref SignupAPI
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${SignupWorker.Arn}/invocations'
+  ApiDeployment:
+    Type: 'AWS::ApiGateway::Deployment'
+    DependsOn:
+      - ApiMethod
+      - ApiOptionsMethod
+    Properties:
+      RestApiId: !Ref SignupAPI
+      StageName: prod
+  LambdaPermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref SignupWorker
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${SignupAPI}/*'
+  FixyachipsUserPool:
+    Type: 'AWS::Cognito::UserPool'
+    Properties:
+      UserPoolName: !Sub 'Fixyachips_Global_Users-${AWS::StackName}'
+      UsernameAttributes: [email]
+      AutoVerifiedAttributes: [email]
+      MfaConfiguration: OPTIONAL
+      EnabledMfas:
+        - SOFTWARE_TOKEN_MFA
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+          RequireUppercase: true
+          TemporaryPasswordValidityDays: 7
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Mutable: true
+          Required: true
+        - Name: veteran_status
+          AttributeDataType: String
+          Mutable: true
+        - Name: industry_segment
+          AttributeDataType: String
+          Mutable: true
+  FixyachipsUserPoolClient:
+    Type: 'AWS::Cognito::UserPoolClient'
+    Properties:
+      ClientName: Fixyachips_Web_Portal
+      UserPoolId: !Ref FixyachipsUserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+        - ALLOW_USER_SRP_AUTH
+      AccessTokenValidity: 1
+      IdTokenValidity: 1
+      RefreshTokenValidity: 30
+      TokenValidityUnits:
+        AccessToken: hours
+        IdToken: hours
+        RefreshToken: days
+      PreventUserExistenceErrors: ENABLED
+Outputs:
+  WebsiteURL:
+    Description: 'CloudFront website URL'
+    Value: !Sub 'https://${DomainName}'
+  CloudFrontDomain:
+    Description: 'Raw CloudFront domain before DNS cutover'
+    Value: !GetAtt WebsiteDistribution.DomainName
+  SignupApiUrl:
+    Description: 'POST endpoint for waitlist signups'
+    Value: !Sub 'https://${SignupAPI}.execute-api.${AWS::Region}.amazonaws.com/prod/signup'
+  S3Bucket:
+    Description: 'Video and content storage bucket'
+    Value: !Ref StreamingVideoBucket
+  LogsBucket:
+    Description: 'CloudFront access logs bucket'
+    Value: !Ref CloudFrontLogsBucket
+  UserPoolId:
+    Description: 'Cognito User Pool ID'
+    Value: !Ref FixyachipsUserPool
+  UserPoolClientId:
+    Description: 'Cognito Client ID'
+    Value: !Ref FixyachipsUserPoolClient
+  WAFArn:
+    Description: 'WAF Web ACL ARN'
+    Value: !GetAtt WebBodyguard.Arn
+  DistributionId:
+    Description: 'CloudFront Distribution ID'
+    Value: !Ref WebsiteDistribution
+

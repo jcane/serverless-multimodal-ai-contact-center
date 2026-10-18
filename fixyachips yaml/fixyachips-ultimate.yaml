@@ -1,0 +1,132 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Fixyachips Global: VOD, AI Manual Factory, and Fraud Prevention'
+
+Parameters:
+  AdminEmail:
+    Type: String
+    Default: 'info@fixyachips.com'
+
+Resources:
+  # --- 1. STORAGE LAYER (S3) ---
+  MasterVideoBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Sub 'fixyachips-masters-${AWS::AccountId}'
+
+  StreamingVideoBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Sub 'fixyachips-streaming-${AWS::AccountId}'
+
+  ManualsBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Sub 'fixyachips-manuals-${AWS::AccountId}'
+
+  # --- 2. DELIVERY LAYER (CloudFront) ---
+  CloudFrontOAC:
+    Type: 'AWS::CloudFront::OriginAccessControl'
+    Properties: 
+      OriginAccessControlConfig: 
+        Description: 'OAC for Fixyachips'
+        Name: !Sub 'FixyachipsOAC-${AWS::StackName}'
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  StreamingDistribution:
+    Type: 'AWS::CloudFront::Distribution'
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: index.html
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt StreamingVideoBucket.DomainName
+            OriginAccessControlId: !GetAtt CloudFrontOAC.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+
+  # --- 3. DATABASE LAYER (DynamoDB) ---
+  StudentTable:
+    Type: 'AWS::DynamoDB::Table'
+    Properties:
+      TableName: !Sub 'FixyachipsStudents-${AWS::StackName}'
+      AttributeDefinitions:
+        - AttributeName: StudentID
+          AttributeType: S
+      KeySchema:
+        - AttributeName: StudentID
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+
+  # --- 4. THE AI ENGINE & SECURITY ROLE (IAM) ---
+  FixyachipsMasterRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: 
+                - lambda.amazonaws.com
+                - states.amazonaws.com      # Step Functions
+                - frauddetector.amazonaws.com # Fraud Detection
+                - bedrock.amazonaws.com      # GenAI
+            Action: ['sts:AssumeRole']
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: FixyachipsAIPowerhouse
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:*'
+                  - 'dynamodb:*'
+                  - 'rekognition:*'   # 3D/Image Analysis
+                  - 'transcribe:*'    # Voice to Text
+                  - 'translate:*'     # Multi-language
+                  - 'polly:*'         # Text to Voice
+                  - 'bedrock:*'       # AI Manual Generation (LLM)
+                  - 'frauddetector:*' # Fraud Prevention
+                  - 'ses:SendEmail'   # Student Notification
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: '*'
+
+  # --- 5. LOGGING & MONITORING (CloudWatch) ---
+  ProjectLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties:
+      LogGroupName: !Sub '/aws/fixyachips/${AWS::StackName}'
+      RetentionInDays: 30
+
+  # --- 6. COST PROTECTION (Budgets) ---
+  SafetyBudget:
+    Type: 'AWS::Budgets::Budget'
+    Properties:
+      Budget:
+        BudgetName: !Sub 'FixyachipsBudget-${AWS::StackName}'
+        BudgetLimit: { Amount: 100, Unit: USD }
+        TimeUnit: MONTHLY
+        BudgetType: COST
+      NotificationsWithSubscribers:
+        - Notification: { NotificationType: ACTUAL, ComparisonOperator: GREATER_THAN, Threshold: 80 }
+          Subscribers: [{ Address: !Ref AdminEmail, SubscriptionType: EMAIL }]
+
+Outputs:
+  CloudFrontURL:
+    Value: !GetAtt StreamingDistribution.DomainName
+  ManualsBucketName:
+    Value: !Ref ManualsBucket
+  IAMRoleArn:
+    Value: !GetAtt FixyachipsMasterRole.Arn

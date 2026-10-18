@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <script async src="https://www.googletagmanager.com/gtag/js?id=AW-1052362672"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'AW-1052362672');
+    </script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fixyachips Academy | The No-Drill Portal</title>
+    <link rel="stylesheet" href="/styles.css">
+    
+    <style>
+        /* --- ACADEMY DESKTOP APP ENGINE --- */
+        body {
+            background-color: #000000 !important; /* Locks canvas to Pure Black */
+            color: #ffffff !important;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        /* Adjusting layout nodes for split structural screen */
+        .app-container {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+            background-color: #000000;
+        }
+
+        /* --- THE 31-DAY ROADMAP NAVIGATION (LEFT SIDE) --- */
+        sidebar {
+            width: 350px;
+            border-right: 2px solid #ffcc00; /* Matching Gold Accent Split */
+            display: flex;
+            flex-direction: column;
+            background-color: #0a0a0a; 
+        }
+
+        .sidebar-header {
+            padding: 20px;
+            border-bottom: 1px solid #222;
+        }
+
+        .course-chapters {
+            flex: 1;
+            overflow-y: auto;
+            list-style: none;
+        }
+
+        .chapter-link {
+            display: flex;
+            align-items: flex-start;
+            padding: 18px 20px;
+            border-bottom: 1px solid #111;
+            text-decoration: none;
+            color: #e0e0e0 !important; /* Silver text matching home paragraph styling */
+            font-size: 0.9rem;
+            font-weight: bold;
+            text-transform: uppercase;
+            transition: 0.2s;
+        }
+
+        .chapter-link:hover {
+            background-color: #1a1a1a;
+            color: #ffcc00 !important; /* Turns Gold on Hover matching main nav rules */
+        }
+
+        .chapter-link.active {
+            background-color: #000000;
+            border-left: 4px solid #ffcc00; /* Solid Gold indicator */
+            color: #ffcc00 !important;
+        }
+
+        .chapter-number {
+            margin-right: 10px;
+            color: #ffcc00;
+        }
+
+        /* --- THE VIDEO COCKPIT (RIGHT SIDE) --- */
+        main {
+            flex: 1;
+            padding: 40px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .workspace-content {
+            width: 100%;
+            max-width: 900px; /* Kept tight to align with your content-section template */
+        }
+
+        /* Cinematic S3/CloudFront wrapper frame */
+        .video-vault {
+            position: relative;
+            width: 100%;
+            padding-bottom: 56.25%; /* Fixed aspect ratio prevents distortion */
+            background: #000;
+            border: 1px solid #ffcc00; /* Signature Gold Boarder */
+            border-radius: 8px;
+            overflow: hidden;
+            margin-bottom: 30px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.8);
+        }
+
+        .video-vault video {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+
+        /* --- RESPONSIVE ADAPTABILITY FOR MOBILE TECHS --- */
+        @media (max-width: 768px) {
+            body { overflow: auto; height: auto; }
+            .app-container { flex-direction: column; height: auto; overflow: visible; }
+            sidebar { width: 100%; height: 280px; border-right: none; border-bottom: 2px solid #ffcc00; }
+            main { padding: 20px 10px; }
+        }
+    </style>
+</head>
+<body>
+
+    <div class="lang-nav" style="background: #1a1a1a; padding: 10px 5%; text-align: right; font-size: 0.8rem; border-bottom: 1px solid #333;">
+        <a href="#" style="color: #ffcc00; text-decoration: none; margin-left: 15px; font-weight: bold;">EN</a>
+        <a href="#" style="color: #fff; text-decoration: none; margin-left: 15px;">ES</a>
+        <a href="#" style="color: #fff; text-decoration: none; margin-left: 15px;">PT</a>
+        <a href="#" style="color: #fff; text-decoration: none; margin-left: 15px;">FR</a>
+        <a href="#" style="color: #fff; text-decoration: none; margin-left: 15px;">DE</a>
+        <a href="#" style="color: #fff; text-decoration: none; margin-left: 15px;">IT</a>
+        <a href="#" style="color: #fff; text-decoration: none; margin-left: 15px;">PL</a>
+        <a href="#" style="color: #fff; text-decoration: none; margin-left: 15px;">SV</a>
+    </div>
+
+    <nav style="display: flex; justify-content: space-between; align-items: center; padding: 10px 5%; background: #000000; border-bottom: 2px solid #ffcc00;">
+        <div class="logo">
+            <img src="/fixyachips-shield-logo.png" alt="Fixyachips Shield Logo" style="height: 60px; width: auto; display: block;">
+        </div>
+        <div class="nav-links">
+            <a href="/index.html" style="margin-left: 20px; text-decoration: none; color: #ffcc00; font-weight: bold;">HOME</a>
+            <a href="#" style="margin-left: 20px; text-decoration: none; color: #fff; font-weight: bold;">ACADEMY PORTAL</a>
+        </div>
+    </nav>
+
+    <div class="app-container">
+        
+        <sidebar>
+            <div class="sidebar-header">
+                <h3 style="color: #ffcc00 !important; margin: 0; text-transform: uppercase; font-size: 1.1rem;">31-Day Video Course</h3>
+            </div>
+            <ul class="course-chapters">
+                <li><a href="#" class="chapter-link active"><span class="chapter-number">DAY 01:</span> Introduction to Extraction Logic</a></li>
+                <li><a href="#" class="chapter-link"><span class="chapter-number">DAY 02:</span> Analyzing Metallurgical Boundaries</a></li>
+                <li><a href="#" class="chapter-link"><span class="chapter-number">DAY 03:</span> Deploying the No-Drill Anchor Point</a></li>
+                <li><a href="#" class="chapter-link"><span class="chapter-number">DAY 04:</span> Torque Vector Calculations</a></li>
+                <li><a href="#" class="chapter-link"><span class="chapter-number">DAY 05:</span> Precision Saturation Engineering</a></li>
+            </ul>
+        </sidebar>
+
+        <main>
+            <div class="workspace-content">
+                
+                <div class="video-vault">
+                    <video id="academy-player" controls controlsList="nodownload" poster="/Fixyachips watermark.png">
+                        <source src="https://your-cloudfront-distribution.cloudfront.net/course/day1/stream.m3u8" type="application/x-mpegURL">
+                        Your browser does not support high-definition HTML5 video streaming.
+                    </video>
+                </div>
+
+                <div class="content-section" style="padding: 0; max-width: 100%;">
+                    <h2 style="color: #ffcc00 !important; font-size: 2.2rem; margin-top: 0;">Day 1: Introduction to Extraction Logic</h2>
+                    <p style="color: #e0e0e0 !important;">Welcome to Day 1 of the elite mastery academy. In this session, we break down why standard machine-shop drilling destroys component integrity and map out the conceptual framework of the proprietary 50-year "No-Drill" lineage system. Grab your notepad.</p>
+                    
+                    <h3 style="color: #ffcc00 !important; margin-top: 25px;">Core Objectives for Today:</h3>
+                    <ul>
+                        <li style="color: #ffffff !important; margin-bottom: 10px; list-style-type: none;"><span style="color: #ffcc00;">• </span>Understand the micro-fissure threat vectors of carbon drill bits.</li>
+                        <li style="color: #ffffff !important; margin-bottom: 10px; list-style-type: none;"><span style="color: #ffcc00;">• </span>Analyze the physical saturation barriers inside standard breaks.</li>
+                    </ul>
+                </div>
+
+            </div>
+        </main>
+
+    </div>
+
+</body>
+</html>

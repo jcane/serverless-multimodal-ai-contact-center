@@ -1,0 +1,60 @@
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { DynamoDBDocumentClient, PutCommand } from "@aws-sdk/lib-dynamodb";
+import { CognitoIdentityProviderClient, AdminCreateUserCommand } from "@aws-sdk/client-cognito-identity-provider";
+
+// CRITICAL EFFICIENCY OPTIMIZATION: Initialize clients OUTSIDE the handler.
+// This allows AWS Lambda to reuse the TCP connections across millions of execution pools.
+const ddbClient = new DynamoDBClient({ 
+    region: "us-east-1",
+    maxAttempts: 3 // Built-in exponential backoff for high-scale throttling protection
+});
+const docClient = DynamoDBDocumentClient.from(ddbClient);
+const cognitoClient = new CognitoIdentityProviderClient({ region: "us-east-1" });
+
+export const handler = async (event) => {
+    // Extract the captured email from the Amazon Connect Contact Flow Contact Attributes
+    const customerEmail = event.Details.ContactData.Attributes.CustomerEmail;
+    
+    if (!customerEmail) {
+        return { Success: false, Error: "No email provided from chat flow" };
+    }
+
+    // 1. Prepare the DynamoDB Write Command
+    const ddbParams = new PutCommand({
+        TableName: "FixYaChips_Leads",
+        Item: {
+            Email: customerEmail.toLowerCase().trim(),
+            CaptureTimestamp: new Date().toISOString(),
+            Source: "Connect_Automated_Chat"
+        }
+    });
+
+    // 2. Prepare the Cognito User Provisioning Command
+    const cognitoParams = new AdminCreateUserCommand({
+        UserPoolId: process.env.COGNITO_USER_POOL_ID,
+        Username: customerEmail.toLowerCase().trim(),
+        UserAttributes: [
+            { Name: "email", Value: customerEmail.toLowerCase().trim() },
+            { Name: "email_verified", Value: "true" }
+        ],
+        MessageAction: "SUPPRESS" // Suppresses sending an immediate welcome email until they buy!
+    });
+
+    try {
+        // RUNTIME EFFICIENCY OPTIMIZATION: Execute concurrently! 
+        // Do not wait for one to finish before starting the other.
+        await Promise.all([
+            docClient.send(ddbParams),
+            cognitoClient.send(cognitoParams)
+        ]);
+
+        return {
+            Success: true,
+            Message: "Identity and Lead records synced flawlessly."
+        };
+    } catch (error) {
+        console.error("Scale ingestion error:", error);
+        // Fallback or send to Dead Letter Queue (SQS) if one tier fails
+        return { Success: false, Error: error.message };
+    }
+};

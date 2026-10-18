@@ -1,0 +1,53 @@
+/* General Layout */
+body {
+    background-color: #1a1a1a;
+    color: #ffffff;
+    font-family: sans-serif;
+    margin: 0;
+}
+
+/* Header & Logo */
+header {
+    display: flex;
+    align-items: center;
+    padding: 20px;
+    background: #000;
+    border-bottom: 3px solid #FFD700;
+}
+
+.logo-shield {
+    width: 60px; /* Adjust size as needed */
+    height: auto;
+    margin-right: 20px;
+}
+
+/* Navigation */
+nav {
+    text-align: center;
+    padding: 15px;
+    background: #333;
+}
+
+nav a {
+    color: #FFD700;
+    margin: 0 15px;
+    text-decoration: none;
+    font-weight: bold;
+}
+
+/* Page Content */
+.container {
+    max-width: 900px;
+    margin: 40px auto;
+    padding: 20px;
+}
+
+/* Watermark Integration */
+.watermark {
+    position: fixed;
+    bottom: 10px;
+    right: 10px;
+    opacity: 0.15; /* Subtle watermark */
+    width: 200px;
+    pointer-events: none;
+}

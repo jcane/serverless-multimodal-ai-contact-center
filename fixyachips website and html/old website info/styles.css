@@ -1,0 +1,44 @@
+:root {
+    --gold: #FFD700;
+    --dark-bg: #121212;
+    --card-bg: #1e1e1e;
+    --text-main: #f4f4f4;
+    --text-dim: #b0b0b0;
+}
+
+body {
+    background-color: var(--dark-bg);
+    color: var(--text-main);
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    line-height: 1.6;
+    margin: 0;
+    padding: 0;
+}
+
+header {
+    background: linear-gradient(rgba(0,0,0,0.7), rgba(0,0,0,0.7)), url('https://images.unsplash.com/photo-1492144534655-ae79c964c9d7?auto=format&fit=crop&q=80&w=1000');
+    background-size: cover;
+    background-position: center;
+    height: 50vh;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    text-align: center;
+    border-bottom: 4px solid var(--gold);
+}
+
+.logo-text { font-size: 3rem; font-weight: 900; color: var(--gold); margin: 0; }
+
+.watermark { text-align: center; padding: 20px; }
+.watermark img { max-width: 150px; opacity: 0.5; }
+
+.container { max-width: 900px; margin: 20px auto; padding: 40px; background: var(--card-bg); border-radius: 8px; }
+
+h2 { color: var(--gold); }
+
+@media (max-width: 768px) {
+    .logo-text { font-size: 1.8rem; }
+    .watermark img { max-width: 80px; }
+    .container { padding: 20px; }
+}

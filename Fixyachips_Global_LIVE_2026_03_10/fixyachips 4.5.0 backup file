@@ -1,0 +1,2532 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Enterprise VOD & Monetization Platform v4.5.0 | AWS Marketplace Edition |
+  CloudFront CDN WAFv2 OAC SigV4 signed VOD URLs | S3 encrypted content and
+  access-log buckets | MediaConvert HLS 1080p 720p pipeline | DynamoDB KMS
+  encrypted student table PITR GSIs | API Gateway REST regional TLS
+  usage-plans xray /signup /webhook/stripe /checkout | Lambda SignupWorker
+  StripeWebhookWorker MediaConvertTriggerWorker CheckoutWorker | Stripe Python
+  SDK Lambda Layer python3.12 | Secrets Manager CMK encrypted Stripe
+  credentials | KMS CMKs auto-rotation | SQS DLQs SNS CloudWatch alarms |
+  IAM least-privilege roles | Environment aware prod staging dev |
+  AWS Marketplace BYOL
+
+# ============================================================
+# METADATA — Required for AWS Marketplace listing display
+# ============================================================
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "🔐 License & Entitlement"
+        Parameters:
+          - MarketplaceToken
+          - AcceptedEULA
+      - Label:
+          default: "🌍 Environment Configuration"
+        Parameters:
+          - Environment
+          - AdminEmail
+      - Label:
+          default: "🎬 Content Delivery (CloudFront)"
+        Parameters:
+          - CertificateArn
+          - CloudFrontPublicKeyPEM
+      - Label:
+          default: "💳 Payment Integration (Stripe)"
+        Parameters:
+          - StripePriceId
+      - Label:
+          default: "📦 Deployment Assets"
+        Parameters:
+          - AssetsBucketName
+          - AssetsBucketPrefix
+    ParameterLabels:
+      MarketplaceToken:
+        default: "AWS Marketplace Entitlement Token"
+      AcceptedEULA:
+        default: "Accept End User License Agreement"
+      Environment:
+        default: "Deployment Environment"
+      AdminEmail:
+        default: "Administrator Email Address"
+      CertificateArn:
+        default: "ACM Certificate ARN (us-east-1, optional)"
+      CloudFrontPublicKeyPEM:
+        default: "CloudFront Public Key PEM (for signed URLs, optional)"
+      StripePriceId:
+        default: "Stripe Price ID (e.g. price_xxxxx)"
+      AssetsBucketName:
+        default: "S3 Bucket containing Lambda Layer and deployment assets"
+      AssetsBucketPrefix:
+        default: "S3 Key prefix for deployment assets"
+
+# ============================================================
+# PARAMETERS
+# ============================================================
+Parameters:
+
+  # --- Marketplace required ---
+  MarketplaceToken:
+    Type: String
+    NoEcho: true
+    Default: ''
+    Description: >-
+      AWS Marketplace entitlement token. Leave blank if subscribing via
+      CloudFormation Quick Launch (token injected automatically).
+
+  AcceptedEULA:
+    Type: String
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Default: 'false'
+    Description: >-
+      You must set this to 'true' to confirm acceptance of the End User
+      License Agreement before deploying this product.
+
+  # --- Platform configuration ---
+  AdminEmail:
+    Type: String
+    AllowedPattern: '^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$'
+    ConstraintDescription: Must be a valid email address.
+    Description: >-
+      Email address for operational alerts (CloudWatch alarms, DLQ
+      notifications). Must be confirmed in SNS after stack creation.
+
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues:
+      - prod
+      - staging
+      - dev
+    Description: Deployment environment tier.
+
+  CertificateArn:
+    Type: String
+    Default: ''
+    AllowedPattern: '^(arn:aws:acm:us-east-1:[0-9]{12}:certificate/[a-f0-9\-]+)?$'
+    ConstraintDescription: Must be a valid ACM certificate ARN in us-east-1.
+    Description: >-
+      ACM certificate ARN for custom domain (must be in us-east-1 for
+      CloudFront). Leave blank to use the default CloudFront domain.
+
+  CloudFrontPublicKeyPEM:
+    Type: String
+    NoEcho: true
+    Default: ''
+    Description: >-
+      PEM-encoded RSA public key for CloudFront signed URLs on private video
+      paths. Leave blank to serve all video content without URL signing.
+
+  StripePriceId:
+    Type: String
+    Default: ''
+    AllowedPattern: '^(price_[a-zA-Z0-9]+)?$'
+    ConstraintDescription: Must be a valid Stripe Price ID (price_xxxxx) or empty.
+    Description: >-
+      Stripe Price ID for the subscription/payment product. Must be updated
+      after stack creation via Secrets Manager if left blank.
+
+  AssetsBucketName:
+    Type: String
+    Description: >-
+      Name of the S3 bucket containing deployment assets (Lambda layer zip).
+      This bucket is pre-provisioned by the Marketplace Quick Launch process.
+    AllowedPattern: '^[a-z0-9][a-z0-9\-]{1,61}[a-z0-9]$'
+    ConstraintDescription: Must be a valid S3 bucket name.
+
+  AssetsBucketPrefix:
+    Type: String
+    Default: 'vod-platform/v4.5.0'
+    Description: >-
+      S3 key prefix under which deployment assets (layers/) reside.
+
+# ============================================================
+# CONDITIONS
+# ============================================================
+Conditions:
+  IsProduction:    !Equals [!Ref Environment, prod]
+  HasCertificate:  !Not [!Equals [!Ref CertificateArn, '']]
+  HasPublicKey:    !Not [!Equals [!Ref CloudFrontPublicKeyPEM, '']]
+  HasStripePriceId: !Not [!Equals [!Ref StripePriceId, '']]
+  EULAAccepted:    !Equals [!Ref AcceptedEULA, 'true']
+
+# ============================================================
+# RULES — Marketplace compliance gates
+# ============================================================
+Rules:
+  EULAMustBeAccepted:
+    Assertions:
+      - Assert: !Equals [!Ref AcceptedEULA, 'true']
+        AssertDescription: >-
+          You must accept the End User License Agreement (set AcceptedEULA=true)
+          before deploying this AWS Marketplace product.
+
+  CertificateRegionCheck:
+    RuleCondition: !Not [!Equals [!Ref CertificateArn, '']]
+    Assertions:
+      - Assert: !Contains
+          - - us-east-1
+          - !Select [3, !Split [':', !Ref CertificateArn]]
+        AssertDescription: >-
+          ACM certificates for CloudFront must be issued in us-east-1.
+
+# ============================================================
+# RESOURCES
+# ============================================================
+Resources:
+
+  # ----------------------------------------------------------
+  # EULA Enforcement Custom Resource
+  # Logs EULA acceptance with timestamp for audit trail
+  # ----------------------------------------------------------
+  EULAEnforcementFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'VODPlatform-EULACheck-${AWS::StackName}'
+      Description: Marketplace EULA acceptance audit logger
+      Handler: index.handler
+      Runtime: python3.12
+      Role: !GetAtt EULALambdaRole.Arn
+      Timeout: 30
+      MemorySize: 128
+      Code:
+        ZipFile: |
+          import json, cfnresponse, datetime, logging
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+          def handler(event, context):
+              try:
+                  props = event.get('ResourceProperties', {})
+                  accepted = props.get('AcceptedEULA', 'false')
+                  env = props.get('Environment', 'unknown')
+                  stack = props.get('StackId', 'unknown')
+                  ts = datetime.datetime.utcnow().isoformat() + 'Z'
+                  if event['RequestType'] in ('Create', 'Update'):
+                      if accepted != 'true':
+                          cfnresponse.send(event, context, cfnresponse.FAILED,
+                              {'Error': 'EULA not accepted'}, 'EULACheck')
+                          return
+                      logger.info(json.dumps({
+                          'event': 'EULA_ACCEPTED',
+                          'timestamp': ts,
+                          'environment': env,
+                          'stack': stack,
+                          'version': '4.5.0'
+                      }))
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS,
+                      {'AcceptedAt': ts, 'Version': '4.5.0'}, 'EULACheck')
+              except Exception as e:
+                  logger.error(str(e))
+                  cfnresponse.send(event, context, cfnresponse.FAILED,
+                      {'Error': str(e)}, 'EULACheck')
+
+  EULALambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Minimal role for EULA enforcement Lambda
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Tags:
+        - Key: Project
+          Value: VODPlatform
+        - Key: Environment
+          Value: !Ref Environment
+
+  EULAAcceptanceRecord:
+    Type: AWS::CloudFormation::CustomResource
+    Properties:
+      ServiceToken: !GetAtt EULAEnforcementFunction.Arn
+      AcceptedEULA: !Ref AcceptedEULA
+      Environment: !Ref Environment
+      StackId: !Ref AWS::StackId
+      Version: '4.5.0'
+
+  # ----------------------------------------------------------
+  # KMS — Customer Managed Keys with auto-rotation
+  # ----------------------------------------------------------
+  SecretsKMSKey:
+    Type: AWS::KMS::Key
+    DependsOn: EULAAcceptanceRecord
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: !Sub 'CMK for VOD Platform Secrets Manager - ${Environment}'
+      EnableKeyRotation: true
+      MultiRegion: false
+      PendingWindowInDays: 30
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowRootAccountFullAccess
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+          - Sid: AllowSecretsManagerService
+            Effect: Allow
+            Principal:
+              Service: secretsmanager.amazonaws.com
+            Action:
+              - kms:Decrypt
+              - kms:GenerateDataKey
+              - kms:DescribeKey
+              - kms:CreateGrant
+            Resource: '*'
+            Condition:
+              StringEquals:
+                kms:CallerAccount: !Ref AWS::AccountId
+      Tags:
+        - Key: Project
+          Value: VODPlatform
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: DataClassification
+          Value: Highly-Confidential
+
+  SecretsKMSKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub 'alias/vod-platform-secrets-${Environment}-${AWS::StackName}'
+      TargetKeyId: !Ref SecretsKMSKey
+
+  DynamoDBKMSKey:
+    Type: AWS::KMS::Key
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: !Sub 'CMK for VOD Platform DynamoDB PII data - ${Environment}'
+      EnableKeyRotation: true
+      PendingWindowInDays: 30
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowRootAccount
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+          - Sid: AllowDynamoDBService
+            Effect: Allow
+            Principal:
+              Service: dynamodb.amazonaws.com
+            Action:
+              - kms:Decrypt
+              - kms:GenerateDataKey
+              - kms:DescribeKey
+            Resource: '*'
+            Condition:
+              StringEquals:
+                kms:CallerAccount: !Ref AWS::AccountId
+      Tags:
+        - Key: Project
+          Value: VODPlatform
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: DataClassification
+          Value: PII-Confidential
+
+  DynamoDBKMSKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub 'alias/vod-platform-dynamodb-${Environment}-${AWS::StackName}'
+      TargetKeyId: !Ref DynamoDBKMSKey
+
+  # ----------------------------------------------------------
+  # CloudFront — Signed URL infrastructure
+  # ----------------------------------------------------------
+  VODPublicKey:
+    Type: AWS::CloudFront::PublicKey
+    Condition: HasPublicKey
+    Properties:
+      PublicKeyConfig:
+        Name: !Sub 'VODPublicKey-${AWS::StackName}'
+        EncodedKey: !Ref CloudFrontPublicKeyPEM
+        Comment: Public key for signing private VOD video streams
+        CallerReference: !Sub '${AWS::StackName}-vod-key-v1'
+
+  VODKeyGroup:
+    Type: AWS::CloudFront::KeyGroup
+    Condition: HasPublicKey
+    Properties:
+      KeyGroupConfig:
+        Name: !Sub 'VODKeyGroup-${AWS::StackName}'
+        Items:
+          - !Ref VODPublicKey
+        Comment: KeyGroup for CloudFront Signed URLs on video paths
+
+  EmpireOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub 'VODPlatform-OAC-${AWS::StackName}'
+        Description: OAC for S3 SigV4 signed requests — replaces legacy OAI
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # ----------------------------------------------------------
+  # WAFv2 — Multi-layer threat protection (CLOUDFRONT scope)
+  # ----------------------------------------------------------
+  WebBodyguard:
+    Type: AWS::WAFv2::WebACL
+    DeletionPolicy: Retain
+    Properties:
+      Scope: CLOUDFRONT
+      Description: !Sub 'VOD Platform WAF Shield - ${Environment}'
+      DefaultAction:
+        Allow: {}
+      VisibilityConfig:
+        SampledRequestsEnabled: true
+        CloudWatchMetricsEnabled: true
+        MetricName: !Sub 'VODPlatformWAF-${Environment}'
+      Rules:
+
+        - Name: CDNRateLimitPerIP
+          Priority: 0
+          Statement:
+            RateBasedStatement:
+              Limit: 2000
+              AggregateKeyType: IP
+              EvaluationWindowSec: 300
+          Action:
+            Block: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: CDNRateLimit
+
+        - Name: AWSManagedRulesCommonRuleSet
+          Priority: 1
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesCommonRuleSet
+              ExcludedRules:
+                - Name: SizeRestrictions_BODY
+          OverrideAction:
+            None: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: CommonRules
+
+        - Name: AWSManagedRulesBotControlRuleSet
+          Priority: 2
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesBotControlRuleSet
+              ManagedRuleGroupConfigs:
+                - AWSManagedRulesBotControlRuleSet:
+                    InspectionLevel: COMMON
+          OverrideAction:
+            None: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: BotControl
+
+        - Name: AWSManagedRulesKnownBadInputsRuleSet
+          Priority: 3
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesKnownBadInputsRuleSet
+          OverrideAction:
+            None: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: KnownBadInputs
+
+        - Name: AWSManagedRulesSQLiRuleSet
+          Priority: 4
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesSQLiRuleSet
+          OverrideAction:
+            None: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: SQLiProtection
+
+        - Name: AWSManagedRulesAmazonIpReputationList
+          Priority: 5
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesAmazonIpReputationList
+          OverrideAction:
+            None: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: IPReputation
+
+      Tags:
+        - Key: Project
+          Value: VODPlatform
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ----------------------------------------------------------
+  # CloudFront Function — Edge routing and header injection
+  # ----------------------------------------------------------
+  WebsiteRouterFunction:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: !Sub 'VODRouter-${AWS::StackName}'
+      AutoPublish: true
+      FunctionConfig:
+        Comment: Clean URL routing, path traversal protection, security headers at edge
+        Runtime: cloudfront-js-2.0
+      FunctionCode: |
+        function handler(event) {
+          var request = event.request;
+          var uri = request.uri;
+
+          // Block path traversal attempts
+          if (uri.indexOf('..') !== -1 ||
+              uri.indexOf('%2e%2e') !== -1 ||
+              uri.indexOf('%2E%2E') !== -1) {
+            return { statusCode: 400, statusDescription: 'Bad Request' };
+          }
+
+          // Block null bytes
+          if (uri.indexOf('%00') !== -1) {
+            return { statusCode: 400, statusDescription: 'Bad Request' };
+          }
+
+          // Enforce URI length limit
+          if (uri.length > 2048) {
+            return { statusCode: 414, statusDescription: 'URI Too Long' };
+          }
+
+          // SPA routing — rewrite non-file URIs to .html
+          var isStaticFile = /\.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|mp4|m3u8|ts|pdf|webp|json|txt|xml|map)$/i.test(uri);
+          if (!isStaticFile) {
+            if (uri === '/') {
+              request.uri = '/index.html';
+            } else if (uri.endsWith('/')) {
+              request.uri = uri + 'index.html';
+            } else if (uri.indexOf('.') === -1) {
+              request.uri = uri + '.html';
+            }
+          }
+
+          return request;
+        }
+
+  # ----------------------------------------------------------
+  # S3 — Access Logs Bucket
+  # ----------------------------------------------------------
+  AccessLogsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub 'vod-platform-logs-${AWS::AccountId}-${Environment}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerPreferred
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: LogRetention90Days
+            Status: Enabled
+            ExpirationInDays: 90
+          - Id: CleanupIncompleteMultiparts
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 3
+          - Id: TransitionLogsToIA
+            Status: Enabled
+            Transitions:
+              - TransitionInDays: 30
+                StorageClass: STANDARD_IA
+      Tags:
+        - Key: Project
+          Value: VODPlatform
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: DataClassification
+          Value: Internal
+
+  AccessLogsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref AccessLogsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowS3LogDelivery
+            Effect: Allow
+            Principal:
+              Service: logging.s3.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub 'arn:aws:s3:::${AccessLogsBucket}/*'
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+          - Sid: AllowCloudFrontLogs
+            Effect: Allow
+            Principal:
+              Service: delivery.logs.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub 'arn:aws:s3:::${AccessLogsBucket}/cloudfront/*'
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+          - Sid: DenyNonHTTPS
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !Sub 'arn:aws:s3:::${AccessLogsBucket}'
+              - !Sub 'arn:aws:s3:::${AccessLogsBucket}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+          - Sid: DenyUnencryptedObjectStorage
+            Effect: Deny
+            Principal: '*'
+            Action: s3:PutObject
+            Resource: !Sub 'arn:aws:s3:::${AccessLogsBucket}/*'
+            Condition:
+              StringNotEquals:
+                s3:x-amz-server-side-encryption:
+                  - AES256
+                  - aws:kms
+
+  # ----------------------------------------------------------
+  # S3 — Primary Content Bucket
+  # ----------------------------------------------------------
+  StreamingVideoBucket:
+    Type: AWS::S3::Bucket
+    DependsOn: MediaConvertTriggerPermission
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub 'vod-platform-content-${AWS::AccountId}-${Environment}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+            BucketKeyEnabled: true
+      VersioningConfiguration:
+        Status: Enabled
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: 's3:ObjectCreated:*'
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: 'raw/'
+            Function: !GetAtt MediaConvertTriggerWorker.Arn
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders:
+              - Authorization
+              - Content-Type
+              - Range
+            AllowedMethods:
+              - GET
+              - HEAD
+            AllowedOrigins:
+              - !If
+                - HasCertificate
+                - 'https://fixyachips.com'
+                - !Sub 'https://${WebsiteDistribution.DomainName}'
+            ExposedHeaders:
+              - Content-Length
+              - Content-Range
+              - ETag
+            MaxAge: 3600
+      LoggingConfiguration:
+        DestinationBucketName: !Ref AccessLogsBucket
+        LogFilePrefix: s3-access/
+      LifecycleConfiguration:
+        Rules:
+          - Id: IntelligentTieringAfter30Days
+            Status: Enabled
+            Transitions:
+              - TransitionInDays: 30
+                StorageClass: INTELLIGENT_TIERING
+            NoncurrentVersionTransitions:
+              - TransitionInDays: 7
+                StorageClass: STANDARD_IA
+              - TransitionInDays: 37
+                StorageClass: GLACIER_IR
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 90
+          - Id: CleanupIncompleteMultiparts
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+          - Id: CleanupRawUploadsAfterTranscode
+            Status: Enabled
+            Prefix: raw/
+            Transitions:
+              - TransitionInDays: 7
+                StorageClass: STANDARD_IA
+            ExpirationInDays: 30
+      Tags:
+        - Key: Project
+          Value: VODPlatform
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: DataClassification
+          Value: Confidential
+
+  StreamingVideoBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    DependsOn: WebsiteDistribution
+    Properties:
+      Bucket: !Ref StreamingVideoBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudFrontOACAccess
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub 'arn:aws:s3:::${StreamingVideoBucket}/*'
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub
+                  - 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${DistId}'
+                  - DistId: !Ref WebsiteDistribution
+          - Sid: DenyNonHTTPS
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !Sub 'arn:aws:s3:::${StreamingVideoBucket}'
+              - !Sub 'arn:aws:s3:::${StreamingVideoBucket}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+          - Sid: DenyUnencryptedUploads
+            Effect: Deny
+            Principal: '*'
+            Action: s3:PutObject
+            Resource: !Sub 'arn:aws:s3:::${StreamingVideoBucket}/*'
+            Condition:
+              StringNotEquals:
+                s3:x-amz-server-side-encryption:
+                  - AES256
+                  - aws:kms
+
+  # ----------------------------------------------------------
+  # IAM — Scoped roles (Marketplace: no wildcards on actions)
+  # ----------------------------------------------------------
+  MediaConvertRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'VODPlatform-MediaConvert-${Environment}-${AWS::StackName}'
+      Description: Least-privilege role for MediaConvert VOD transcoding
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: mediaconvert.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: MediaConvertS3LeastPrivilege
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ReadRawInputVideos
+                Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub 'arn:aws:s3:::${StreamingVideoBucket}/raw/*'
+              - Sid: WriteTranscodedOutput
+                Effect: Allow
+                Action: s3:PutObject
+                Resource:
+                  - !Sub 'arn:aws:s3:::${StreamingVideoBucket}/videos/*'
+                  - !Sub 'arn:aws:s3:::${StreamingVideoBucket}/thumbnails/*'
+              - Sid: ListPrefixesOnly
+                Effect: Allow
+                Action: s3:ListBucket
+                Resource: !Sub 'arn:aws:s3:::${StreamingVideoBucket}'
+                Condition:
+                  StringLike:
+                    s3:prefix:
+                      - 'raw/*'
+                      - 'videos/*'
+      Tags:
+        - Key: Project
+          Value: VODPlatform
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Separate Lambda execution roles per function (least privilege)
+  SignupWorkerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'VODPlatform-SignupWorker-${Environment}-${AWS::StackName}'
+      Description: Scoped execution role for SignupWorker Lambda
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess
+      Policies:
+        - PolicyName: DynamoDBWriteStudents
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:Query
+                Resource:
+                  - !GetAtt StudentTable.Arn
+                  - !Sub '${StudentTable.Arn}/index/*'
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:GenerateDataKey
+                  - kms:DescribeKey
+                Resource: !GetAtt DynamoDBKMSKey.Arn
+        - PolicyName: DLQWrite
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !GetAtt SignupDLQ.Arn
+      Tags:
+        - Key: Project
+          Value: VODPlatform
+        - Key: Environment
+          Value: !Ref Environment
+
+  StripeWebhookWorkerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'VODPlatform-WebhookWorker-${Environment}-${AWS::StackName}'
+      Description: Scoped execution role for StripeWebhookWorker Lambda
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess
+      Policies:
+        - PolicyName: SecretsReadStripe
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref StripeApiSecret
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:DescribeKey
+                Resource: !GetAtt SecretsKMSKey.Arn
+        - PolicyName: DynamoDBUpdateStudents
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:Query
+                Resource:
+                  - !GetAtt StudentTable.Arn
+                  - !Sub '${StudentTable.Arn}/index/*'
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:GenerateDataKey
+                  - kms:DescribeKey
+                Resource: !GetAtt DynamoDBKMSKey.Arn
+        - PolicyName: DLQWrite
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !GetAtt StripeWebhookDLQ.Arn
+      Tags:
+        - Key: Project
+          Value: VODPlatform
+        - Key: Environment
+          Value: !Ref Environment
+
+  CheckoutWorkerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'VODPlatform-CheckoutWorker-${Environment}-${AWS::StackName}'
+      Description: Scoped execution role for CheckoutWorker Lambda
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess
+      Policies:
+        - PolicyName: SecretsReadStripe
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref StripeApiSecret
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:DescribeKey
+                Resource: !GetAtt SecretsKMSKey.Arn
+        - PolicyName: DLQWrite
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !GetAtt CheckoutWorkerDLQ.Arn
+      Tags:
+        - Key: Project
+          Value: VODPlatform
+        - Key: Environment
+          Value: !Ref Environment
+
+  MediaConvertTriggerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'VODPlatform-MCTrigger-${Environment}-${AWS::StackName}'
+      Description: Scoped execution role for MediaConvertTriggerWorker Lambda
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess
+      Policies:
+        - PolicyName: MediaConvertJobSubmit
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - mediaconvert:CreateJob
+                  - mediaconvert:GetJob
+                  - mediaconvert:ListJobs
+                Resource:
+                  - !Sub 'arn:aws:mediaconvert:${AWS::Region}:${AWS::AccountId}:queues/*'
+                  - !Sub 'arn:aws:mediaconvert:${AWS::Region}:${AWS::AccountId}:jobs/*'
+              - Effect: Allow
+                Action: mediaconvert:DescribeEndpoints
+                Resource: '*'
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt MediaConvertRole.Arn
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: mediaconvert.amazonaws.com
+        - PolicyName: S3ReadRaw
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub 'arn:aws:s3:::${StreamingVideoBucket}/raw/*'
+      Tags:
+        - Key: Project
+          Value: VODPlatform
+        - Key: Environment
+          Value: !Ref Environment
+
+  # API Gateway CloudWatch logging role
+  ApiGatewayCloudWatchRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'VODPlatform-APIGW-CWLogs-${Environment}-${AWS::StackName}'
+      Description: API Gateway role for CloudWatch execution logs
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs
+      Tags:
+        - Key: Project
+          Value: VODPlatform
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ----------------------------------------------------------
+  # MediaConvert Queue
+  # ----------------------------------------------------------
+  MediaConvertQueue:
+    Type: AWS::MediaConvert::Queue
+    Properties:
+      Name: !Sub 'VODPlatformQueue-${AWS::StackName}'
+      Description: On-Demand MediaConvert queue for VOD HLS transcoding
+      PricingPlan: ON_DEMAND
+      Status: ACTIVE
+      Tags:
+        Project: VODPlatform
+        Environment: !Ref Environment
+
+  # ----------------------------------------------------------
+  # CloudFront — Security headers response policy
+  # ----------------------------------------------------------
+  SecurityHeadersPolicy:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: !Sub 'VODPlatformSecurityHeaders-${AWS::StackName}'
+        Comment: Production security headers — HSTS, CSP, frame-ancestors
+        SecurityHeadersConfig:
+          StrictTransportSecurity:
+            AccessControlMaxAgeSec: 63072000
+            IncludeSubdomains: true
+            Preload: true
+            Override: true
+          ContentTypeOptions:
+            Override: true
+          FrameOptions:
+            FrameOption: DENY
+            Override: true
+          XSSProtection:
+            Protection: true
+            ModeBlock: true
+            Override: true
+          ReferrerPolicy:
+            ReferrerPolicy: strict-origin-when-cross-origin
+            Override: true
+          ContentSecurityPolicy:
+            ContentSecurityPolicy: !If
+              - HasCertificate
+              - >-
+                default-src 'self' https://fixyachips.com https://*.fixyachips.com;
+                script-src 'self' https://js.stripe.com;
+                style-src 'self' https://fonts.googleapis.com;
+                font-src 'self' https://fonts.gstatic.com data:;
+                img-src 'self' data: https://*.fixyachips.com https://*.amazonaws.com;
+                media-src 'self' https://*.fixyachips.com https://*.cloudfront.net blob:;
+                connect-src 'self' https://*.amazonaws.com https://*.fixyachips.com https://api.stripe.com;
+                frame-src https://js.stripe.com https://hooks.stripe.com;
+                frame-ancestors 'none'; upgrade-insecure-requests
+              - >-
+                default-src 'self';
+                script-src 'self' https://js.stripe.com;
+                style-src 'self' https://fonts.googleapis.com;
+                font-src 'self' https://fonts.gstatic.com data:;
+                img-src 'self' data: https://*.amazonaws.com;
+                media-src 'self' https://*.cloudfront.net blob:;
+                connect-src 'self' https://*.amazonaws.com https://api.stripe.com;
+                frame-src https://js.stripe.com https://hooks.stripe.com;
+                frame-ancestors 'none'; upgrade-insecure-requests
+            Override: true
+        CustomHeadersConfig:
+          Items:
+            - Header: Cache-Control
+              Value: 'no-store, no-cache'
+              Override: false
+            - Header: Permissions-Policy
+              Value: 'camera=(), microphone=(), geolocation=(), payment=(self)'
+              Override: true
+
+  # ----------------------------------------------------------
+  # CloudFront Distribution
+  # ----------------------------------------------------------
+  WebsiteDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub 'VOD Platform Global CDN - ${Environment}'
+        PriceClass: !If [IsProduction, PriceClass_All, PriceClass_100]
+        DefaultRootObject: index.html
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        WebACLId: !GetAtt WebBodyguard.Arn
+        Aliases: !If
+          - HasCertificate
+          - - fixyachips.com
+            - www.fixyachips.com
+          - !Ref AWS::NoValue
+        ViewerCertificate: !If
+          - HasCertificate
+          - AcmCertificateArn: !Ref CertificateArn
+            SslSupportMethod: sni-only
+            MinimumProtocolVersion: TLSv1.2_2021
+          - CloudFrontDefaultCertificate: true
+        Logging:
+          Bucket: !GetAtt AccessLogsBucket.DomainName
+          Prefix: cloudfront/
+          IncludeCookies: false
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt StreamingVideoBucket.RegionalDomainName
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+            OriginAccessControlId: !GetAtt EmpireOAC.Id
+            OriginShield:
+              Enabled: !If [IsProduction, true, false]
+              OriginShieldRegion: !Ref AWS::Region
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD]
+          ResponseHeadersPolicyId: !Ref SecurityHeadersPolicy
+          # Managed-CachingOptimized
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          # Managed-CORS-S3Origin
+          OriginRequestPolicyId: 88a5eaf4-2fd4-4709-b370-b4c650ea3fcf
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+        CacheBehaviors:
+          - PathPattern: 'videos/*'
+            TargetOriginId: S3Origin
+            ViewerProtocolPolicy: https-only
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD]
+            ResponseHeadersPolicyId: !Ref SecurityHeadersPolicy
+            CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+            TrustedKeyGroups: !If
+              - HasPublicKey
+              - - !Ref VODKeyGroup
+              - !Ref AWS::NoValue
+        CustomErrorResponses:
+          - ErrorCode: 400
+            ResponseCode: 400
+            ResponsePagePath: /error/400.html
+            ErrorCachingMinTTL: 10
+          - ErrorCode: 403
+            ResponseCode: 403
+            ResponsePagePath: /error/403.html
+            ErrorCachingMinTTL: 30
+          - ErrorCode: 404
+            ResponseCode: 404
+            ResponsePagePath: /error/404.html
+            ErrorCachingMinTTL: 30
+          - ErrorCode: 500
+            ResponseCode: 500
+            ResponsePagePath: /error/500.html
+            ErrorCachingMinTTL: 0
+          - ErrorCode: 502
+            ResponseCode: 502
+            ResponsePagePath: /error/500.html
+            ErrorCachingMinTTL: 0
+          - ErrorCode: 503
+            ResponseCode: 503
+            ResponsePagePath: /error/500.html
+            ErrorCachingMinTTL: 0
+      Tags:
+        - Key: Project
+          Value: VODPlatform
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ----------------------------------------------------------
+  # Secrets Manager — Stripe credentials (CMK encrypted)
+  # ----------------------------------------------------------
+  StripeApiSecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: !Sub '/vod-platform/${Environment}/${AWS::StackName}/stripe-credentials'
+      Description: Stripe API keys and Webhook signing secrets — update values post-deploy
+      KmsKeyId: !Ref SecretsKMSKey
+      SecretString: !Sub
+        - |
+          {
+            "api_key": "REPLACE_WITH_REAL_STRIPE_KEY_AFTER_DEPLOY",
+            "webhook_secret": "REPLACE_WITH_REAL_WEBHOOK_SECRET_AFTER_DEPLOY",
+            "price_id": "${PriceIdVal}",
+            "environment": "${Environment}"
+          }
+        - PriceIdVal: !If [HasStripePriceId, !Ref StripePriceId, 'REPLACE_WITH_PRICE_ID']
+      Tags:
+        - Key: Project
+          Value: VODPlatform
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: DataClassification
+          Value: Highly-Confidential
+        - Key: RotationRequired
+          Value: 'true'
+
+  StripeApiSecretResourcePolicy:
+    Type: AWS::SecretsManager::ResourcePolicy
+    Properties:
+      SecretId: !Ref StripeApiSecret
+      BlockPublicPolicy: true
+      ResourcePolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCheckoutWorkerReadOnly
+            Effect: Allow
+            Principal:
+              AWS: !GetAtt CheckoutWorkerRole.Arn
+            Action: secretsmanager:GetSecretValue
+            Resource: '*'
+          - Sid: AllowWebhookWorkerReadOnly
+            Effect: Allow
+            Principal:
+              AWS: !GetAtt StripeWebhookWorkerRole.Arn
+            Action: secretsmanager:GetSecretValue
+            Resource: '*'
+          - Sid: DenySecretDeletion
+            Effect: Deny
+            Principal: '*'
+            Action:
+              - secretsmanager:DeleteSecret
+              - secretsmanager:PutSecretValue
+            Resource: '*'
+            Condition:
+              StringNotEquals:
+                aws:PrincipalArn:
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+
+  # ----------------------------------------------------------
+  # DynamoDB — Student/subscriber table
+  # ----------------------------------------------------------
+  StudentTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub 'VODPlatform-Students-${Environment}-${AWS::StackName}'
+      AttributeDefinitions:
+        - AttributeName: StudentID
+          AttributeType: S
+        - AttributeName: Email
+          AttributeType: S
+        - AttributeName: Status
+          AttributeType: S
+      KeySchema:
+        - AttributeName: StudentID
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: Email-Index
+          KeySchema:
+            - AttributeName: Email
+              KeyType: HASH
+          Projection:
+            ProjectionType: KEYS_ONLY
+        - IndexName: Status-Index
+          KeySchema:
+            - AttributeName: Status
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      BillingMode: PAY_PER_REQUEST
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !Ref DynamoDBKMSKey
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      DeletionProtectionEnabled: !If [IsProduction, true, false]
+      Tags:
+        - Key: Project
+          Value: VODPlatform
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: DataClassification
+          Value: PII-Confidential
+        - Key: GDPRApplicable
+          Value: 'true'
+
+  # ----------------------------------------------------------
+  # SQS — Dead Letter Queues (SSE-SQS encrypted)
+  # ----------------------------------------------------------
+  SignupDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub 'VODPlatform-SignupDLQ-${AWS::StackName}'
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+      Tags:
+        - Key: Project
+          Value: VODPlatform
+        - Key: Environment
+          Value: !Ref Environment
+
+  StripeWebhookDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub 'VODPlatform-StripeWebhookDLQ-${AWS::StackName}'
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+      Tags:
+        - Key: Project
+          Value: VODPlatform
+        - Key: Environment
+          Value: !Ref Environment
+
+  CheckoutWorkerDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub 'VODPlatform-CheckoutDLQ-${AWS::StackName}'
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+      Tags:
+        - Key: Project
+          Value: VODPlatform
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ----------------------------------------------------------
+  # API Gateway — Regional REST API
+  # ----------------------------------------------------------
+  ApiGatewayAccount:
+    Type: AWS::ApiGateway::Account
+    DependsOn: ApiGatewayCloudWatchRole
+    Properties:
+      CloudWatchRoleArn: !GetAtt ApiGatewayCloudWatchRole.Arn
+
+  PlatformApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub 'VODPlatformAPI-${AWS::StackName}'
+      Description: REST API for waitlist signup, Stripe checkout, and webhook processing
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+      Policy:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action: execute-api:Invoke
+            Resource: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:*/*/*/*'
+
+  # API Resources
+  SignupApiResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref PlatformApi
+      ParentId: !GetAtt PlatformApi.RootResourceId
+      PathPart: signup
+
+  WebhookApiResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref PlatformApi
+      ParentId: !GetAtt PlatformApi.RootResourceId
+      PathPart: webhook
+
+  StripeApiResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref PlatformApi
+      ParentId: !Ref WebhookApiResource
+      PathPart: stripe
+
+  CheckoutApiResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref PlatformApi
+      ParentId: !GetAtt PlatformApi.RootResourceId
+      PathPart: checkout
+
+  # API Methods — /signup
+  SignupApiMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref PlatformApi
+      ResourceId: !Ref SignupApiResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${SignupWorker.Arn}/invocations'
+        TimeoutInMillis: 29000
+
+  SignupApiOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref PlatformApi
+      ResourceId: !Ref SignupApiResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: '200'
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,Authorization'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: !If
+                - HasCertificate
+                - "'https://fixyachips.com'"
+                - !Sub "'https://${WebsiteDistribution.DomainName}'"
+            ResponseTemplates:
+              application/json: ''
+      MethodResponses:
+        - StatusCode: '200'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # API Methods — /webhook/stripe
+  StripeWebhookMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref PlatformApi
+      ResourceId: !Ref StripeApiResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${StripeWebhookWorker.Arn}/invocations'
+        TimeoutInMillis: 29000
+
+  # API Methods — /checkout
+  CheckoutApiMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref PlatformApi
+      ResourceId: !Ref CheckoutApiResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${CheckoutWorker.Arn}/invocations'
+        TimeoutInMillis: 29000
+
+  CheckoutApiOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref PlatformApi
+      ResourceId: !Ref CheckoutApiResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: '200'
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,Authorization'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: !If
+                - HasCertificate
+                - "'https://fixyachips.com'"
+                - !Sub "'https://${WebsiteDistribution.DomainName}'"
+            ResponseTemplates:
+              application/json: ''
+      MethodResponses:
+        - StatusCode: '200'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # Deployment & Stage
+  ApiGatewayDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - SignupApiMethod
+      - SignupApiOptionsMethod
+      - StripeWebhookMethod
+      - CheckoutApiMethod
+      - CheckoutApiOptionsMethod
+    Properties:
+      RestApiId: !Ref PlatformApi
+
+  ApiAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/apigateway/VODPlatformAPI-${AWS::StackName}'
+      RetentionInDays: !If [IsProduction, 90, 30]
+
+  ApiGatewayStage:
+    Type: AWS::ApiGateway::Stage
+    DependsOn: ApiGatewayAccount
+    Properties:
+      RestApiId: !Ref PlatformApi
+      DeploymentId: !Ref ApiGatewayDeployment
+      StageName: !Ref Environment
+      TracingEnabled: true
+      AccessLogSetting:
+        DestinationArn: !GetAtt ApiAccessLogGroup.Arn
+      MethodSettings:
+        - ResourcePath: '/*'
+          HttpMethod: '*'
+          LoggingLevel: ERROR
+          MetricsEnabled: true
+          ThrottlingBurstLimit: 100
+          ThrottlingRateLimit: 50
+          DataTraceEnabled: false
+
+  ApiUsagePlan:
+    Type: AWS::ApiGateway::UsagePlan
+    Properties:
+      UsagePlanName: !Sub 'VODPlatformUsagePlan-${AWS::StackName}'
+      Description: API rate limiting and daily quota management
+      ApiStages:
+        - ApiId: !Ref PlatformApi
+          Stage: !Ref ApiGatewayStage
+      Throttle:
+        BurstLimit: 200
+        RateLimit: 100
+      Quota:
+        Limit: !If [IsProduction, 100000, 10000]
+        Period: DAY
+
+  # ----------------------------------------------------------
+  # Lambda Layer — Stripe Python SDK
+  # ----------------------------------------------------------
+  StripePythonLayer:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      LayerName: !Sub 'stripe-python-layer-${AWS::StackName}'
+      Description: Stripe Python SDK v9+ for CheckoutWorker and StripeWebhookWorker
+      Content:
+        S3Bucket: !Ref AssetsBucketName
+        S3Key: !Sub '${AssetsBucketPrefix}/layers/stripe-python.zip'
+      CompatibleRuntimes:
+        - python3.12
+      CompatibleArchitectures:
+        - x86_64
+
+  StripePythonLayerPermission:
+    Type: AWS::Lambda::LayerVersionPermission
+    Properties:
+      Action: lambda:GetLayerVersion
+      LayerVersionArn: !Ref StripePythonLayer
+      Principal: !Ref AWS::AccountId
+
+  # ----------------------------------------------------------
+  # Lambda Functions — with pre-created log groups
+  # ----------------------------------------------------------
+
+  # SignupWorker
+  SignupWorkerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/VODPlatform-SignupWorker-${AWS::StackName}'
+      RetentionInDays: !If [IsProduction, 90, 30]
+
+  SignupWorker:
+    Type: AWS::Lambda::Function
+    DependsOn: SignupWorkerLogGroup
+    Properties:
+      FunctionName: !Sub 'VODPlatform-SignupWorker-${AWS::StackName}'
+      Description: Waitlist signup handler — input validation, dedup, DynamoDB write
+      Handler: index.lambda_handler
+      Runtime: python3.12
+      Role: !GetAtt SignupWorkerRole.Arn
+      Timeout: 29
+      MemorySize: 256
+      ReservedConcurrentExecutions: 100
+      TracingConfig:
+        Mode: Active
+      DeadLetterConfig:
+        TargetArn: !GetAtt SignupDLQ.Arn
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref StudentTable
+          ADMIN_EMAIL: !Ref AdminEmail
+          ALLOWED_ORIGIN: !If
+            - HasCertificate
+            - 'https://fixyachips.com'
+            - !Sub 'https://${WebsiteDistribution.DomainName}'
+          ENVIRONMENT: !Ref Environment
+          LOG_LEVEL: !If [IsProduction, 'WARNING', 'INFO']
+      Code:
+        ZipFile: |
+          import json, boto3, uuid, os, re, logging
+          from datetime import datetime, timezone
+          from botocore.exceptions import ClientError
+
+          logger = logging.getLogger()
+          logger.setLevel(os.environ.get('LOG_LEVEL', 'WARNING'))
+
+          EP = re.compile(r'^[a-zA-Z0-9._%+\-]{1,64}@[a-zA-Z0-9.\-]{1,253}\.[a-zA-Z]{2,}$')
+          NP = re.compile(r"^[a-zA-Z\s'\-\.]{2,100}$")
+          AO = os.environ.get('ALLOWED_ORIGIN', '')
+
+          CORS_HEADERS = {
+              'Access-Control-Allow-Origin': AO,
+              'Access-Control-Allow-Headers': 'Content-Type',
+              'Access-Control-Allow-Methods': 'POST, OPTIONS',
+              'Vary': 'Origin',
+              'X-Content-Type-Options': 'nosniff'
+          }
+
+          def validate_input(email, name):
+              if not email or len(email) > 254:
+                  return False, 'Invalid email address'
+              if not EP.match(email):
+                  return False, 'Invalid email format'
+              if not name or len(name) < 2 or len(name) > 100:
+                  return False, 'Name must be between 2 and 100 characters'
+              if not NP.match(name):
+                  return False, 'Name contains invalid characters'
+              return True, ''
+
+          def lambda_handler(event, context):
+              if event.get('httpMethod') == 'OPTIONS':
+                  return {'statusCode': 200, 'headers': CORS_HEADERS, 'body': ''}
+              if event.get('httpMethod') != 'POST':
+                  return {'statusCode': 405, 'headers': CORS_HEADERS,
+                          'body': json.dumps({'error': 'Method not allowed'})}
+              try:
+                  raw_body = event.get('body') or ''
+                  if len(raw_body) > 10240:
+                      return {'statusCode': 413, 'headers': CORS_HEADERS,
+                              'body': json.dumps({'error': 'Request too large'})}
+                  try:
+                      body = json.loads(raw_body)
+                  except json.JSONDecodeError:
+                      return {'statusCode': 400, 'headers': CORS_HEADERS,
+                              'body': json.dumps({'error': 'Invalid JSON'})}
+
+                  email = str(body.get('email', '')).strip().lower()
+                  name = str(body.get('name', '')).strip()
+                  ok, msg = validate_input(email, name)
+                  if not ok:
+                      return {'statusCode': 400, 'headers': CORS_HEADERS,
+                              'body': json.dumps({'error': msg})}
+
+                  student_id = str(uuid.uuid5(uuid.NAMESPACE_URL, 'vod-platform:' + email))
+                  now = datetime.now(timezone.utc).isoformat()
+
+                  table = boto3.resource('dynamodb').Table(os.environ['TABLE_NAME'])
+                  try:
+                      table.put_item(
+                          Item={
+                              'StudentID': student_id,
+                              'Name': name,
+                              'Email': email,
+                              'Status': 'WAITLIST',
+                              'CreatedAt': now
+                          },
+                          ConditionExpression=(
+                              'attribute_not_exists(StudentID) OR #s = :waitlist'
+                          ),
+                          ExpressionAttributeNames={'#s': 'Status'},
+                          ExpressionAttributeValues={':waitlist': 'WAITLIST'}
+                      )
+                  except ClientError as e:
+                      if e.response['Error']['Code'] == 'ConditionalCheckFailedException':
+                          # Already registered — return success silently (no enumeration)
+                          return {'statusCode': 200, 'headers': CORS_HEADERS,
+                                  'body': json.dumps({'status': 'success'})}
+                      raise
+
+                  return {'statusCode': 200, 'headers': CORS_HEADERS,
+                          'body': json.dumps({'status': 'success'})}
+
+              except Exception as exc:
+                  logger.error('Signup error: %s', str(exc), exc_info=True)
+                  return {'statusCode': 500, 'headers': CORS_HEADERS,
+                          'body': json.dumps({'error': 'Internal server error'})}
+      Tags:
+        - Key: Project
+          Value: VODPlatform
+        - Key: Environment
+          Value: !Ref Environment
+
+  SignupWorkerPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref SignupWorker
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${PlatformApi}/*/*/*'
+
+  # StripeWebhookWorker
+  StripeWebhookWorkerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/VODPlatform-StripeWebhook-${AWS::StackName}'
+      RetentionInDays: !If [IsProduction, 90, 30]
+
+  StripeWebhookWorker:
+    Type: AWS::Lambda::Function
+    DependsOn: StripeWebhookWorkerLogGroup
+    Properties:
+      FunctionName: !Sub 'VODPlatform-StripeWebhook-${AWS::StackName}'
+      Description: Stripe webhook processor — HMAC-SHA256 signature verification, entitlement grant
+      Handler: index.lambda_handler
+      Runtime: python3.12
+      Role: !GetAtt StripeWebhookWorkerRole.Arn
+      Timeout: 29
+      MemorySize: 256
+      ReservedConcurrentExecutions: 50
+      TracingConfig:
+        Mode: Active
+      DeadLetterConfig:
+        TargetArn: !GetAtt StripeWebhookDLQ.Arn
+      Environment:
+        Variables:
+          SECRET_ARN: !Ref StripeApiSecret
+          TABLE_NAME: !Ref StudentTable
+          ENVIRONMENT: !Ref Environment
+      Code:
+        ZipFile: |
+          import json, boto3, os, logging, hmac, hashlib, time, uuid
+          from datetime import datetime, timezone
+          from botocore.exceptions import ClientError
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          _secret_cache = None
+          _secret_ts = 0
+          SECRET_TTL = 300
+          TIMESTAMP_TOLERANCE_SECS = 300
+
+          def get_secrets():
+              global _secret_cache, _secret_ts
+              now = time.time()
+              if _secret_cache and (now - _secret_ts) < SECRET_TTL:
+                  return _secret_cache
+              client = boto3.client('secretsmanager')
+              resp = client.get_secret_value(SecretId=os.environ['SECRET_ARN'])
+              _secret_cache = json.loads(resp['SecretString'])
+              _secret_ts = now
+              return _secret_cache
+
+          def verify_stripe_signature(body, sig_header, webhook_secret):
+              """
+              Verify Stripe webhook HMAC-SHA256 signature.
+              Rejects requests older than TIMESTAMP_TOLERANCE_SECS.
+              """
+              try:
+                  parts = dict(item.split('=', 1) for item in sig_header.split(',') if '=' in item)
+                  ts = parts.get('t')
+                  sigs = [v for k, v in parts.items() if k == 'v1']
+                  if not ts or not sigs:
+                      return False
+                  try:
+                      ts_int = int(ts)
+                  except ValueError:
+                      return False
+                  age = abs(time.time() - ts_int)
+                  if age > TIMESTAMP_TOLERANCE_SECS:
+                      logger.warning('Stripe webhook timestamp too old: %d seconds', age)
+                      return False
+                  signed_payload = f'{ts}.{body}'
+                  expected = hmac.new(
+                      webhook_secret.encode(),
+                      msg=signed_payload.encode(),
+                      digestmod=hashlib.sha256
+                  ).hexdigest()
+                  return any(hmac.compare_digest(expected, s) for s in sigs)
+              except Exception as e:
+                  logger.error('Signature verification error: %s', str(e))
+                  return False
+
+          def lambda_handler(event, context):
+              try:
+                  raw_body = event.get('body') or ''
+                  if not raw_body:
+                      return {'statusCode': 400, 'body': json.dumps({'error': 'Empty body'})}
+
+                  headers = event.get('headers') or {}
+                  sig_header = (headers.get('Stripe-Signature') or
+                                headers.get('stripe-signature') or '')
+                  if not sig_header:
+                      return {'statusCode': 400, 'body': json.dumps({'error': 'Missing signature'})}
+
+                  secrets = get_secrets()
+                  webhook_secret = secrets.get('webhook_secret', '')
+                  if not webhook_secret or 'REPLACE' in webhook_secret:
+                      logger.error('Stripe webhook_secret not configured')
+                      return {'statusCode': 500, 'body': json.dumps({'error': 'Config error'})}
+
+                  if not verify_stripe_signature(raw_body, sig_header, webhook_secret):
+                      logger.error('SECURITY: Stripe signature verification FAILED')
+                      return {'statusCode': 403, 'body': json.dumps({'error': 'Invalid signature'})}
+
+                  event_data = json.loads(raw_body)
+                  event_type = event_data.get('type')
+                  event_id = event_data.get('id', 'unknown')
+                  logger.info('Verified Stripe event: %s (id: %s)', event_type, event_id)
+
+                  if event_type == 'checkout.session.completed':
+                      session = event_data.get('data', {}).get('object', {})
+                      customer_email = session.get('customer_details', {}).get('email', '').lower().strip()
+                      payment_status = session.get('payment_status')
+                      if not customer_email or payment_status != 'paid':
+                          return {'statusCode': 200, 'body': json.dumps({'received': True})}
+
+                      student_id = str(uuid.uuid5(uuid.NAMESPACE_URL, 'vod-platform:' + customer_email))
+                      table = boto3.resource('dynamodb').Table(os.environ['TABLE_NAME'])
+                      try:
+                          table.update_item(
+                              Key={'StudentID': student_id},
+                              UpdateExpression=(
+                                  'SET #s = :status, Entitlement = :ent, '
+                                  'Email = :email, StripeEventId = :eid, UpdatedAt = :ts'
+                              ),
+                              ExpressionAttributeNames={'#s': 'Status'},
+                              ExpressionAttributeValues={
+                                  ':status': 'ACTIVE_SUBSCRIBER',
+                                  ':ent': 'VOD_FULL_ACCESS',
+                                  ':email': customer_email,
+                                  ':eid': event_id,
+                                  ':ts': datetime.now(timezone.utc).isoformat()
+                              }
+                          )
+                      except ClientError as e:
+                          logger.error('DynamoDB error: %s', e.response['Error']['Code'])
+                          return {'statusCode': 500, 'body': json.dumps({'error': 'DB error'})}
+
+                  return {'statusCode': 200, 'body': json.dumps({'received': True})}
+
+              except json.JSONDecodeError:
+                  return {'statusCode': 400, 'body': json.dumps({'error': 'Invalid JSON'})}
+              except Exception as err:
+                  logger.error('Webhook failed: %s', str(err), exc_info=True)
+                  return {'statusCode': 500, 'body': json.dumps({'error': 'Internal error'})}
+      Tags:
+        - Key: Project
+          Value: VODPlatform
+        - Key: Environment
+          Value: !Ref Environment
+
+  StripeWebhookPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref StripeWebhookWorker
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${PlatformApi}/*/*/*'
+
+  # MediaConvertTriggerWorker
+  MediaConvertTriggerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/VODPlatform-MCTrigger-${AWS::StackName}'
+      RetentionInDays: !If [IsProduction, 30, 14]
+
+  MediaConvertTriggerWorker:
+    Type: AWS::Lambda::Function
+    DependsOn: MediaConvertTriggerLogGroup
+    Properties:
+      FunctionName: !Sub 'VODPlatform-MCTrigger-${AWS::StackName}'
+      Description: Auto-triggers MediaConvert HLS transcoding on S3 raw/ upload
+      Handler: index.lambda_handler
+      Runtime: python3.12
+      Role: !GetAtt MediaConvertTriggerRole.Arn
+      Timeout: 60
+      MemorySize: 256
+      ReservedConcurrentExecutions: 20
+      TracingConfig:
+        Mode: Active
+      Environment:
+        Variables:
+          MEDIACONVERT_ROLE: !GetAtt MediaConvertRole.Arn
+          QUEUE_ARN: !GetAtt MediaConvertQueue.Arn
+          OUTPUT_BUCKET: !Sub 'vod-platform-content-${AWS::AccountId}-${Environment}'
+          AWS_REGION_NAME: !Ref AWS::Region
+      Code:
+        ZipFile: |
+          import json, boto3, os, logging, urllib.parse
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          _endpoint_cache = None
+
+          def get_mediaconvert_endpoint():
+              global _endpoint_cache
+              if _endpoint_cache:
+                  return _endpoint_cache
+              client = boto3.client(
+                  'mediaconvert',
+                  region_name=os.environ.get('AWS_REGION_NAME', 'us-east-1')
+              )
+              _endpoint_cache = client.describe_endpoints()['Endpoints'][0]['Url']
+              return _endpoint_cache
+
+          def build_job_settings(bucket, key, output_bucket, output_prefix):
+              """Build MediaConvert HLS 1080p + 720p job settings."""
+              return {
+                  'Inputs': [{
+                      'FileInput': f's3://{bucket}/{key}',
+                      'AudioSelectors': {
+                          'Audio Selector 1': {'DefaultSelection': 'DEFAULT'}
+                      }
+                  }],
+                  'OutputGroups': [{
+                      'Name': 'HLS Output',
+                      'OutputGroupSettings': {
+                          'Type': 'HLS_GROUP_SETTINGS',
+                          'HlsGroupSettings': {
+                              'Destination': f's3://{output_bucket}/{output_prefix}',
+                              'SegmentLength': 6,
+                              'MinSegmentLength': 0
+                          }
+                      },
+                      'Outputs': [
+                          {
+                              'NameModifier': '_1080p',
+                              'VideoDescription': {
+                                  'Width': 1920,
+                                  'Height': 1080,
+                                  'CodecSettings': {
+                                      'Codec': 'H_264',
+                                      'H264Settings': {
+                                          'Bitrate': 5000000,
+                                          'RateControlMode': 'CBR'
+                                      }
+                                  }
+                              },
+                              'AudioDescriptions': [{
+                                  'CodecSettings': {
+                                      'Codec': 'AAC',
+                                      'AacSettings': {
+                                          'Bitrate': 128000,
+                                          'SampleRate': 48000
+                                      }
+                                  }
+                              }],
+                              'ContainerSettings': {'Container': 'M3U8'}
+                          },
+                          {
+                              'NameModifier': '_720p',
+                              'VideoDescription': {
+                                  'Width': 1280,
+                                  'Height': 720,
+                                  'CodecSettings': {
+                                      'Codec': 'H_264',
+                                      'H264Settings': {
+                                          'Bitrate': 2500000,
+                                          'RateControlMode': 'CBR'
+                                      }
+                                  }
+                              },
+                              'AudioDescriptions': [{
+                                  'CodecSettings': {
+                                      'Codec': 'AAC',
+                                      'AacSettings': {
+                                          'Bitrate': 128000,
+                                          'SampleRate': 48000
+                                      }
+                                  }
+                              }],
+                              'ContainerSettings': {'Container': 'M3U8'}
+                          }
+                      ]
+                  }]
+              }
+
+          def lambda_handler(event, context):
+              try:
+                  for record in event.get('Records', []):
+                      bucket = record['s3']['bucket']['name']
+                      key = urllib.parse.unquote_plus(record['s3']['object']['key'])
+
+                      if not key.startswith('raw/'):
+                          logger.info('Skipping non-raw/ key: %s', key)
+                          continue
+
+                      output_prefix = key.replace('raw/', 'videos/', 1).rsplit('/', 1)[0] + '/'
+                      output_bucket = os.environ['OUTPUT_BUCKET']
+
+                      endpoint = get_mediaconvert_endpoint()
+                      mc_client = boto3.client('mediaconvert', endpoint_url=endpoint)
+
+                      job_settings = build_job_settings(bucket, key, output_bucket, output_prefix)
+                      response = mc_client.create_job(
+                          Role=os.environ['MEDIACONVERT_ROLE'],
+                          Queue=os.environ['QUEUE_ARN'],
+                          Settings=job_settings,
+                          UserMetadata={
+                              'source_bucket': bucket,
+                              'source_key': key,
+                              'output_prefix': output_prefix
+                          }
+                      )
+                      logger.info('MediaConvert job created: %s', response['Job']['Id'])
+
+                  return {'statusCode': 200, 'body': json.dumps('Jobs dispatched')}
+
+              except Exception as e:
+                  logger.error('MediaConvert trigger failed: %s', str(e), exc_info=True)
+                  raise
+      Tags:
+        - Key: Project
+          Value: VODPlatform
+        - Key: Environment
+          Value: !Ref Environment
+
+  MediaConvertTriggerPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref MediaConvertTriggerWorker
+      Principal: s3.amazonaws.com
+      SourceArn: !Sub 'arn:aws:s3:::vod-platform-content-${AWS::AccountId}-${Environment}'
+      SourceAccount: !Ref AWS::AccountId
+
+  # CheckoutWorker
+  CheckoutWorkerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/VODPlatform-CheckoutWorker-${AWS::StackName}'
+      RetentionInDays: !If [IsProduction, 90, 30]
+
+  CheckoutWorker:
+    Type: AWS::Lambda::Function
+    DependsOn: CheckoutWorkerLogGroup
+    Properties:
+      FunctionName: !Sub 'VODPlatform-CheckoutWorker-${AWS::StackName}'
+      Description: Creates Stripe Checkout Session — uses Stripe SDK layer and Secrets Manager
+      Handler: index.lambda_handler
+      Runtime: python3.12
+      Role: !GetAtt CheckoutWorkerRole.Arn
+      Timeout: 29
+      MemorySize: 256
+      ReservedConcurrentExecutions: 50
+      TracingConfig:
+        Mode: Active
+      DeadLetterConfig:
+        TargetArn: !GetAtt CheckoutWorkerDLQ.Arn
+      Layers:
+        - !Ref StripePythonLayer
+      Environment:
+        Variables:
+          SECRET_ARN: !Ref StripeApiSecret
+          ALLOWED_ORIGIN: !If
+            - HasCertificate
+            - 'https://fixyachips.com'
+            - !Sub 'https://${WebsiteDistribution.DomainName}'
+          SUCCESS_URL: !If
+            - HasCertificate
+            - 'https://fixyachips.com/success?session_id={CHECKOUT_SESSION_ID}'
+            - !Sub 'https://${WebsiteDistribution.DomainName}/success?session_id={CHECKOUT_SESSION_ID}'
+          CANCEL_URL: !If
+            - HasCertificate
+            - 'https://fixyachips.com/pricing'
+            - !Sub 'https://${WebsiteDistribution.DomainName}/pricing'
+          ENVIRONMENT: !Ref Environment
+      Code:
+        ZipFile: |
+          import json, os, time, logging, boto3
+          import stripe
+          from botocore.exceptions import ClientError
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          AO = os.environ.get('ALLOWED_ORIGIN', '')
+          CORS_HEADERS = {
+              'Access-Control-Allow-Origin': AO,
+              'Access-Control-Allow-Headers': 'Content-Type',
+              'Access-Control-Allow-Methods': 'POST, OPTIONS',
+              'Vary': 'Origin',
+              'X-Content-Type-Options': 'nosniff'
+          }
+
+          _stripe_key_cache = None
+          _stripe_key_ts = 0
+          _price_id_cache = None
+          SECRET_TTL = 300
+
+          def get_stripe_credentials():
+              global _stripe_key_cache, _stripe_key_ts, _price_id_cache
+              now = time.time()
+              if _stripe_key_cache and (now - _stripe_key_ts) < SECRET_TTL:
+                  return _stripe_key_cache, _price_id_cache
+              client = boto3.client('secretsmanager')
+              resp = client.get_secret_value(SecretId=os.environ['SECRET_ARN'])
+              data = json.loads(resp['SecretString'])
+              _stripe_key_cache = data.get('api_key', '')
+              _price_id_cache = data.get('price_id', '')
+              _stripe_key_ts = now
+              return _stripe_key_cache, _price_id_cache
+
+          def lambda_handler(event, context):
+              if event.get('httpMethod') == 'OPTIONS':
+                  return {'statusCode': 200, 'headers': CORS_HEADERS, 'body': ''}
+              if event.get('httpMethod') != 'POST':
+                  return {'statusCode': 405, 'headers': CORS_HEADERS,
+                          'body': json.dumps({'error': 'Method not allowed'})}
+              try:
+                  raw_body = event.get('body') or ''
+                  if len(raw_body) > 4096:
+                      return {'statusCode': 413, 'headers': CORS_HEADERS,
+                              'body': json.dumps({'error': 'Request too large'})}
+                  try:
+                      body = json.loads(raw_body) if raw_body else {}
+                  except json.JSONDecodeError:
+                      return {'statusCode': 400, 'headers': CORS_HEADERS,
+                              'body': json.dumps({'error': 'Invalid JSON'})}
+
+                  customer_email = str(body.get('email', '')).strip().lower()
+
+                  api_key, price_id = get_stripe_credentials()
+                  if not api_key or 'REPLACE' in api_key:
+                      logger.error('Stripe api_key not configured in Secrets Manager')
+                      return {'statusCode': 500, 'headers': CORS_HEADERS,
+                              'body': json.dumps({'error': 'Payment not configured'})}
+                  if not price_id or 'REPLACE' in price_id:
+                      logger.error('Stripe price_id not configured in Secrets Manager')
+                      return {'statusCode': 500, 'headers': CORS_HEADERS,
+                              'body': json.dumps({'error': 'Product not configured'})}
+
+                  stripe.api_key = api_key
+                  session_params = {
+                      'payment_method_types': ['card'],
+                      'line_items': [{'price': price_id, 'quantity': 1}],
+                      'mode': 'payment',
+                      'success_url': os.environ.get('SUCCESS_URL', ''),
+                      'cancel_url': os.environ.get('CANCEL_URL', ''),
+                      'metadata': {
+                          'environment': os.environ.get('ENVIRONMENT', 'dev'),
+                          'source': 'vod-platform-checkout'
+                      }
+                  }
+                  if customer_email:
+                      session_params['customer_email'] = customer_email
+
+                  session = stripe.checkout.Session.create(**session_params)
+                  logger.info('Stripe session created: %s email: %s',
+                              session.id, customer_email or 'anon')
+                  return {
+                      'statusCode': 200,
+                      'headers': CORS_HEADERS,
+                      'body': json.dumps({'url': session.url, 'session_id': session.id})
+                  }
+
+              except ValueError as ve:
+                  logger.error('Config error: %s', str(ve))
+                  return {'statusCode': 500, 'headers': CORS_HEADERS,
+                          'body': json.dumps({'error': 'Payment configuration error'})}
+              except stripe.error.CardError as e:
+                  return {'statusCode': 402, 'headers': CORS_HEADERS,
+                          'body': json.dumps({'error': e.user_message})}
+              except stripe.error.InvalidRequestError as e:
+                  logger.error('Stripe invalid request: %s', str(e))
+                  return {'statusCode': 400, 'headers': CORS_HEADERS,
+                          'body': json.dumps({'error': 'Invalid payment request'})}
+              except stripe.error.AuthenticationError:
+                  logger.error('Stripe auth error — check api_key in Secrets Manager')
+                  return {'statusCode': 500, 'headers': CORS_HEADERS,
+                          'body': json.dumps({'error': 'Payment authentication error'})}
+              except stripe.error.StripeError as e:
+                  logger.error('StripeError: %s', str(e))
+                  return {'statusCode': 502, 'headers': CORS_HEADERS,
+                          'body': json.dumps({'error': 'Payment provider error'})}
+              except Exception as e:
+                  logger.error('Checkout error: %s', str(e), exc_info=True)
+                  return {'statusCode': 500, 'headers': CORS_HEADERS,
+                          'body': json.dumps({'error': 'Internal server error'})}
+      Tags:
+        - Key: Project
+          Value: VODPlatform
+        - Key: Environment
+          Value: !Ref Environment
+
+  CheckoutWorkerPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref CheckoutWorker
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${PlatformApi}/*/*/*'
+
+  # ----------------------------------------------------------
+  # Monitoring — SNS + CloudWatch Alarms
+  # ----------------------------------------------------------
+  AlertNotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub 'VODPlatform-Alerts-${AWS::StackName}'
+      KmsMasterKeyId: !Sub 'alias/aws/sns'
+      Subscription:
+        - Endpoint: !Ref AdminEmail
+          Protocol: email
+      Tags:
+        - Key: Project
+          Value: VODPlatform
+        - Key: Environment
+          Value: !Ref Environment
+
+  AlertTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref AlertNotificationTopic
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudWatchPublish
+            Effect: Allow
+            Principal:
+              Service: cloudwatch.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref AlertNotificationTopic
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+          - Sid: DenyNonSSL
+            Effect: Deny
+            Principal: '*'
+            Action: sns:Publish
+            Resource: !Ref AlertNotificationTopic
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+
+  SignupWorkerErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub 'VODPlatform-SignupWorker-Errors-${AWS::StackName}'
+      AlarmDescription: Signup Lambda errors exceed threshold
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      DatapointsToAlarm: 2
+      Threshold: 3
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref SignupWorker
+      AlarmActions:
+        - !Ref AlertNotificationTopic
+      OKActions:
+        - !Ref AlertNotificationTopic
+
+  StripeWebhookErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub 'VODPlatform-StripeWebhook-Errors-${AWS::StackName}'
+      AlarmDescription: CRITICAL Stripe webhook errors — possible payment processing failure
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref StripeWebhookWorker
+      AlarmActions:
+        - !Ref AlertNotificationTopic
+      OKActions:
+        - !Ref AlertNotificationTopic
+
+  CheckoutWorkerErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub 'VODPlatform-CheckoutWorker-Errors-${AWS::StackName}'
+      AlarmDescription: CRITICAL CheckoutWorker errors — failed Stripe session creation
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref CheckoutWorker
+      AlarmActions:
+        - !Ref AlertNotificationTopic
+      OKActions:
+        - !Ref AlertNotificationTopic
+
+  SignupDLQMessageAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub 'VODPlatform-SignupDLQ-Backlog-${AWS::StackName}'
+      AlarmDescription: Dead letter queue accumulating failed signup messages
+      MetricName: ApproximateNumberOfMessagesVisible
+      Namespace: AWS/SQS
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt SignupDLQ.QueueName
+      AlarmActions:
+        - !Ref AlertNotificationTopic
+      OKActions:
+        - !Ref AlertNotificationTopic
+
+  StripeWebhookDLQAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub 'VODPlatform-StripeWebhookDLQ-${AWS::StackName}'
+      AlarmDescription: CRITICAL Failed Stripe webhooks accumulating in DLQ
+      MetricName: ApproximateNumberOfMessagesVisible
+      Namespace: AWS/SQS
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt StripeWebhookDLQ.QueueName
+      AlarmActions:
+        - !Ref AlertNotificationTopic
+      OKActions:
+        - !Ref AlertNotificationTopic
+
+  CheckoutWorkerDLQAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub 'VODPlatform-CheckoutDLQ-${AWS::StackName}'
+      AlarmDescription: CRITICAL Failed Stripe checkout session creations in DLQ
+      MetricName: ApproximateNumberOfMessagesVisible
+      Namespace: AWS/SQS
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt CheckoutWorkerDLQ.QueueName
+      AlarmActions:
+        - !Ref AlertNotificationTopic
+      OKActions:
+        - !Ref AlertNotificationTopic
+
+  ApiGateway5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub 'VODPlatform-API-5xxErrors-${AWS::StackName}'
+      AlarmDescription: API Gateway returning server-side 5xx errors
+      MetricName: 5XXError
+      Namespace: AWS/ApiGateway
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      DatapointsToAlarm: 2
+      Threshold: 5
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: ApiName
+          Value: !Sub 'VODPlatformAPI-${AWS::StackName}'
+        - Name: Stage
+          Value: !Ref Environment
+      AlarmActions:
+        - !Ref AlertNotificationTopic
+      OKActions:
+        - !Ref AlertNotificationTopic
+
+  StripeWebhookThrottleAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub 'VODPlatform-StripeWebhook-Throttles-${AWS::StackName}'
+      AlarmDescription: Stripe webhook Lambda being throttled — increase concurrency
+      MetricName: Throttles
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref StripeWebhookWorker
+      AlarmActions:
+        - !Ref AlertNotificationTopic
+      OKActions:
+        - !Ref AlertNotificationTopic
+
+# ============================================================
+# OUTPUTS
+# ============================================================
+Outputs:
+
+  # Marketplace display outputs
+  MarketplaceProductVersion:
+    Description: Deployed product version
+    Value: '4.5.0'
+
+  EULAAcceptedAt:
+    Description: Timestamp when EULA was accepted
+    Value: !GetAtt EULAAcceptanceRecord.AcceptedAt
+
+  # Platform endpoints
+  CloudFrontDistributionId:
+    Description: CloudFront Distribution ID
+    Value: !Ref WebsiteDistribution
+    Export:
+      Name: !Sub '${AWS::StackName}-CloudFrontDistributionId'
+
+  CloudFrontDomainName:
+    Description: CloudFront distribution domain — use for DNS CNAME
+    Value: !GetAtt WebsiteDistribution.DomainName
+    Export:
+      Name: !Sub '${AWS::StackName}-CloudFrontDomain'
+
+  ApiGatewayEndpoint:
+    Description: REST API base URL
+    Value: !Sub 'https://${PlatformApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}'
+    Export:
+      Name: !Sub '${AWS::StackName}-ApiEndpoint'
+
+  SignupEndpointUrl:
+    Description: POST /signup — accepts name + email, returns success
+    Value: !Sub 'https://${PlatformApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/signup'
+    Export:
+      Name: !Sub '${AWS::StackName}-SignupEndpoint'
+
+  CheckoutEndpointUrl:
+    Description: POST /checkout — accepts email, returns Stripe session URL
+    Value: !Sub 'https://${PlatformApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/checkout'
+    Export:
+      Name: !Sub '${AWS::StackName}-CheckoutEndpoint'
+
+  StripeWebhookEndpointUrl:
+    Description: POST /webhook/stripe — register this URL in Stripe Dashboard
+    Value: !Sub 'https://${PlatformApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/webhook/stripe'
+    Export:
+      Name: !Sub '${AWS::StackName}-StripeWebhookEndpoint'
+
+  # Data stores
+  StudentTableName:
+    Description: DynamoDB Students table name
+    Value: !Ref StudentTable
+    Export:
+      Name: !Sub '${AWS::StackName}-StudentTable'
+
+  ContentBucketName:
+    Description: S3 content bucket — upload raw videos to raw/ prefix
+    Value: !Ref StreamingVideoBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-ContentBucket'
+
+  # Secrets
+  StripeSecretArn:
+    Description: >-
+      Secrets Manager ARN — update api_key, webhook_secret, and price_id values
+      after deployment before processing payments
+    Value: !Ref StripeApiSecret
+    Export:
+      Name: !Sub '${AWS::StackName}-StripeSecretArn'
+
+  # Media processing
+  MediaConvertQueueArn:
+    Description: MediaConvert queue ARN
+    Value: !GetAtt MediaConvertQueue.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-MediaConvertQueue'
+
+  # CloudFront signed URL
+  VODKeyGroupId:
+    Description: CloudFront Key Group ID for signed VOD URLs
+    Condition: HasPublicKey
+    Value: !Ref VODKeyGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-VODKeyGroupId'
+
+  # DLQ URLs for operations
+  StripeWebhookDLQUrl:
+    Description: DLQ URL — monitor for failed Stripe webhook deliveries
+    Value: !Ref StripeWebhookDLQ
+    Export:
+      Name: !Sub '${AWS::StackName}-StripeWebhookDLQ'
+
+  SignupDLQUrl:
+    Description: DLQ URL — monitor for failed signup processing
+    Value: !Ref SignupDLQ
+    Export:
+      Name: !Sub '${AWS::StackName}-SignupDLQ'
+
+  CheckoutWorkerDLQUrl:
+    Description: DLQ URL — monitor for failed checkout session creations
+    Value: !Ref CheckoutWorkerDLQ
+    Export:
+      Name: !Sub '${AWS::StackName}-CheckoutDLQ'
+
+  # Layer
+  StripePythonLayerArn:
+    Description: Versioned ARN of the Stripe Python SDK Lambda Layer
+    Value: !Ref StripePythonLayer
+    Export:
+      Name: !Sub '${AWS::StackName}-StripePythonLayerArn'

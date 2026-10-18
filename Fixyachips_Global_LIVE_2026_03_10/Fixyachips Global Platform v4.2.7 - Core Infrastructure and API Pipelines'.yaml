@@ -1,0 +1,422 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Fixyachips Global Platform v4.2.7 - Core Infrastructure and API Pipelines'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues: [prod, staging, dev]
+    Description: Deployment environment naming prefix.
+
+Resources:
+  # ==========================================================================
+  # STORAGE LAYER (FRONTEND ASSETS)
+  # ==========================================================================
+  StreamingVideoBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'fixyachips-global-streaming-${Environment}-${AWS::AccountId}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  # ==========================================================================
+  # EDGE CDN AND SECURITY NETWORK
+  # ==========================================================================
+  CloudFrontOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub 'fixyachips-global-oac-${Environment}'
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  WebsiteWAF:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      Name: !Sub 'fixyachips-cdn-waf-${Environment}'
+      Scope: CLOUDFRONT
+      DefaultAction:
+        Allow: {}
+      VisibilityConfig:
+        SampledRequestsEnabled: true
+        CloudWatchMetricsEnabled: true
+        MetricName: WebsiteWAFMetric
+      Rules:
+        - Name: AWSManagedRulesCommonRuleSet
+          Priority: 1
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesCommonRuleSet
+          OverrideAction:
+            None: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: WafCommonRulesMetric
+
+  WebsiteDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        HttpVersion: http2and3
+        PriceClass: PriceClass_All
+        WebACLId: !GetAtt WebsiteWAF.Arn
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt StreamingVideoBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt CloudFrontOAC.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD]
+          CachePolicyId: 658327cb-1b1d-435c-9114-12d0e11e44be # Managed-CachingOptimized
+          ResponseHeadersPolicyId: !Ref SecurityResponseHeadersPolicy
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+            ErrorCachingMinTTL: 10
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+            ErrorCachingMinTTL: 10
+
+  SecurityResponseHeadersPolicy:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: !Sub 'fixyachips-security-headers-${Environment}'
+        SecurityHeadersConfig:
+          StrictTransportSecurity:
+            AccessControlMaxAgeSec: 31536000
+            IncludeSubdomains: true
+            Preload: true
+            Override: true
+          XContentTypeOptions:
+            Override: true
+          XFrameOptions:
+            FrameOption: DENY
+            Override: true
+          XSSProtection:
+            Protection: true
+            ModeBlock: true
+            Override: true
+          ReferrerPolicy:
+            ReferrerPolicy: strict-origin-when-cross-origin
+            Override: true
+
+  WebsiteRouterFunction:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: !Sub 'fixyachips-router-${Environment}'
+      FunctionConfig:
+        Comment: 'Appends index.html to subdirectories for clean SPA edge routing.'
+        Runtime: cloudfront-js-2.0
+      FunctionCode: |
+        function handler(event) {
+            var request = event.request;
+            var uri = request.uri;
+            if (uri.endsWith('/')) {
+                request.uri += 'index.html';
+            } else if (!uri.includes('.')) {
+                request.uri += '/index.html';
+            }
+            return request;
+        }
+
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref StreamingVideoBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudFrontOAC
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub '${StreamingVideoBucket.Arn}/*'
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${WebsiteDistribution}'
+
+  # ==========================================================================
+  # DATABASE LAYER
+  # ==========================================================================
+  StudentTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub 'fixyachips-students-${Environment}'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: email
+          AttributeType: S
+      KeySchema:
+        - AttributeName: email
+          KeyType: HASH
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+  # ==========================================================================
+  # ASYNCHRONOUS FAULT PROTECTION LAYER
+  # ==========================================================================
+  SignupDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub 'fixyachips-signup-dlq-${Environment}'
+      MessageRetentionPeriod: 1209600 # 14 days
+      KmsMasterKeyId: alias/aws/sqs
+
+  # ==========================================================================
+  # COMPUTE PROCESSING LAYER (BACKEND LAMBDA BRAIN)
+  # ==========================================================================
+  FixyachipsMasterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'fixyachips-execution-role-${Environment}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: FixyachipsExecutionPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                Resource: !GetAtt StudentTable.Arn
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                Resource: !GetAtt SignupDLQ.Arn
+              - Effect: Allow
+                Action:
+                  - ses:SendEmail
+                  - ses:SendRawEmail
+                Resource: '*'
+
+  SignupWorker:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'fixyachips-signup-worker-${Environment}'
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt FixyachipsMasterRole.Arn
+      Timeout: 10
+      MemorySize: 256
+      DeadLetterConfig:
+        TargetArn: !GetAtt SignupDLQ.Arn
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref StudentTable
+          REGION: !Ref AWS::Region
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import boto3
+          import re
+          from botocore.exceptions import ClientError
+
+          dynamodb = boto3.resource('dynamodb', region_name=os.environ['REGION'])
+          ses = boto3.client('ses', region_name=os.environ['REGION'])
+          table = dynamodb.Table(os.environ['TABLE_NAME'])
+
+          EMAIL_REGEX = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+
+          def lambda_handler(event, context):
+              headers = {
+                  'Access-Control-Allow-Origin': '*',
+                  'Access-Control-Allow-Headers': 'Content-Type,Authorization',
+                  'Access-Control-Allow-Methods': 'POST,OPTIONS'
+              }
+              
+              if event.get('httpMethod') == 'OPTIONS':
+                  return {'statusCode': 200, 'headers': headers, 'body': ''}
+                  
+              try:
+                  body = json.loads(event.get('body', '{}'))
+                  email = body.get('email', '').strip().lower()
+                  name = body.get('name', '').strip()
+                  source = body.get('source', 'unknown').strip()
+                  industry = body.get('industry', 'not_provided').strip()
+                  
+                  if not email or not name:
+                      return {'statusCode': 400, 'headers': headers, 'body': json.dumps({'error': 'Missing required fields'})}
+                      
+                  if not re.match(EMAIL_REGEX, email):
+                      return {'statusCode': 400, 'headers': headers, 'body': json.dumps({'error': 'Invalid email format'})}
+                      
+                  table.put_item(Item={
+                      'email': email,
+                      'name': name,
+                      'source': source,
+                      'industry': industry,
+                      'signup_date': context.aws_request_id
+                  })
+                  
+                  try:
+                      ses.send_email(
+                          Source='noreply@fixyachips.com',
+                          Destination={'ToAddresses': [email]},
+                          Message={
+                              'Subject': {'Data': 'Welcome to Fixyachips Global Platform Waitlist!'},
+                              'Body': {
+                                  'Text': {'Data': f"Hi {name},\n\nThank you for signing up for the Fixyachips Global Platform waitlist. We have recorded your interest and will update you shortly.\n\nBest regards,\nFixyachips Team"}
+                              }
+                          }
+                      )
+                  except ClientError as e:
+                      print(f"SES Error: {e.response['Error']['Message']}")
+                      
+                  return {'statusCode': 201, 'headers': headers, 'body': json.dumps({'message': 'Registration successful'})}
+                  
+              except Exception as e:
+                  print(f"System Error: {str(e)}")
+                  return {'statusCode': 500, 'headers': headers, 'body': json.dumps({'error': 'Internal server error'})}
+
+  # ==========================================================================
+  # INGRESS ENTRY PORT LAYER (API GATEWAY)
+  # ==========================================================================
+  SignupAPI:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub 'fixyachips-signup-api-${Environment}'
+      Description: 'Ingress API Gateway for the Platform Waitlist Framework.'
+      EndpointConfiguration:
+        Types: [REGIONAL]
+
+  SignupRequestModel:
+    Type: AWS::ApiGateway::Model
+    Properties:
+      ContentType: application/json
+      Description: 'Signup request validation structure.'
+      Name: SignupRequest
+      RestApiId: !Ref SignupAPI
+      Schema:
+        $schema: "http://json-schema.org/draft-04/schema#"
+        title: "SignupRequest"
+        type: "object"
+        properties:
+          email:
+            type: "string"
+          name:
+            type: "string"
+          source:
+            type: "string"
+          industry:
+            type: "string"
+        required: ["email", "name"]
+
+  SignupRequestValidator:
+    Type: AWS::ApiGateway::RequestValidator
+    Properties:
+      Name: SignupRequestValidator
+      RestApiId: !Ref SignupAPI
+      ValidateRequestBody: true
+      ValidateRequestParameters: false
+
+  SignupMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: POST
+      ResourceId: !GetAtt SignupAPI.RootResourceId
+      RestApiId: !Ref SignupAPI
+      RequestModels:
+        application/json: !Ref SignupRequestModel
+      RequestValidatorId: !Ref SignupRequestValidator
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${SignupWorker.Arn}/invocations'
+
+  SignupOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: OPTIONS
+      ResourceId: !GetAtt SignupAPI.RootResourceId
+      RestApiId: !Ref SignupAPI
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: "{\"statusCode\": 200}"
+        IntegrationResponses:
+          - StatusCode: '200'
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: ""
+      MethodResponses:
+        - StatusCode: '200'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  ApiGatewayLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref SignupWorker
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:apigateway:${AWS::Region}:${AWS::AccountId}:${SignupAPI}/*/*/*'
+
+  SignupDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - SignupMethod
+      - SignupOptionsMethod
+    Properties:
+      RestApiId: !Ref SignupAPI
+
+  SignupStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      DeploymentId: !Ref SignupDeployment
+      RestApiId: !Ref SignupAPI
+      StageName: v1
+
+# ==========================================================================
+# OUTPUT PIPELINE CONTROL EXPOSURES
+# ==========================================================================
+Outputs:
+  WebsiteCloudFrontURL:
+    Description: 'Production Global CDN Traffic Routing URL.'
+    Value: !GetAtt WebsiteDistribution.DomainName
+  
+  S3AssetDeploymentBucket:
+    Description: 'Static Target Storage Destination Bucket.'
+    Value: !Ref StreamingVideoBucket
+
+  TargetIngressApiEndpoint:
+    Description: 'Live Interface Active Waitlist Pipeline Ingress URL.'
+    Value: !Sub 'https://${SignupAPI}.execute-api.${AWS::Region}.amazonaws.com/v1'

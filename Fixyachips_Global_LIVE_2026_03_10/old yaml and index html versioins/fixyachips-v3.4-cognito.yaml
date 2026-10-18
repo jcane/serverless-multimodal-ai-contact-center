@@ -1,0 +1,202 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Fixyachips Global v3.4: Cognito Identity Integration'
+
+Parameters:
+  AdminEmail:
+    Type: String
+    Default: 'info@fixyachips.com'
+
+Resources:
+  WebsiteRouterFunction:
+    Type: 'AWS::CloudFront::Function'
+    Properties:
+      Name: !Sub 'FixRouter${AWS::StackName}'
+      AutoPublish: true
+      FunctionConfig:
+        Comment: 'Appends html to subfolder requests'
+        Runtime: 'cloudfront-js-1.0'
+      FunctionCode: |
+        function handler(event) {
+          var request = event.request;
+          var uri = request.uri;
+          if (uri.endsWith('/')) {
+            request.uri += 'index.html';
+          } else if (!uri.includes('.')) {
+            request.uri += '.html';
+          }
+          return request;
+        }
+
+  WebBodyguard:
+    Type: 'AWS::WAFv2::WebACL'
+    Properties:
+      Name: !Sub 'FixyachipsShield-${AWS::StackName}'
+      Scope: CLOUDFRONT
+      DefaultAction: { Allow: {} }
+      VisibilityConfig:
+        SampledRequestsEnabled: true
+        CloudWatchMetricsEnabled: true
+        MetricName: FixyachipsWAF
+      Rules:
+        - Name: AWS-AWSManagedRulesCommonRuleSet
+          Priority: 0
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesCommonRuleSet
+          OverrideAction: { None: {} }
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: CommonRules
+
+  StreamingVideoBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Sub 'fixyachips-vod-platform-${AWS::AccountId}'
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ['*']
+            AllowedMethods: [GET, POST, PUT]
+            AllowedOrigins: ['*']
+
+  StudentTable:
+    Type: 'AWS::DynamoDB::Table'
+    Properties:
+      TableName: !Sub 'FixyachipsStudents-${AWS::StackName}'
+      AttributeDefinitions:
+        - AttributeName: StudentID
+          AttributeType: S
+      KeySchema:
+        - AttributeName: StudentID
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+
+  SignupWorker:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      FunctionName: !Sub 'FixyachipsSignupWorker-${AWS::StackName}'
+      Handler: index.lambda_handler
+      Runtime: python3.9
+      Role: !GetAtt FixyachipsMasterRole.Arn
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref StudentTable
+          ADMIN_EMAIL: !Ref AdminEmail
+      Code:
+        ZipFile: |
+          import json, boto3, uuid, os
+          dynamodb = boto3.resource('dynamodb')
+          ses = boto3.client('ses')
+          table = dynamodb.Table(os.environ['TABLE_NAME'])
+          def lambda_handler(event, context):
+              try:
+                  body = json.loads(event['body'])
+                  email = body['email']
+                  name = body['name']
+                  table.put_item(Item={'StudentID': str(uuid.uuid4()), 'Name': name, 'Email': email, 'Status': 'PRE-SIGNUP'})
+                  ses.send_email(
+                      Source=os.environ['ADMIN_EMAIL'],
+                      Destination={'ToAddresses': [email, os.environ['ADMIN_EMAIL']]},
+                      Message={'Subject': {'Data': 'Welcome to the No-Drill Revolution!'}, 'Body': {'Text': {'Data': f'Hello {name},\n\nThank you for joining the Fixyachips Academy waitlist!'}}}
+                  )
+                  return {'statusCode': 200, 'headers': {'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json'}, 'body': json.dumps({'status': 'Success'})}
+              except Exception as e:
+                  return {'statusCode': 500, 'body': json.dumps({'error': str(e)})}
+
+  SignupAPI:
+    Type: 'AWS::ApiGateway::RestApi'
+    Properties:
+      Name: !Sub 'FixyachipsAPI-${AWS::StackName}'
+
+  ApiResource:
+    Type: 'AWS::ApiGateway::Resource'
+    Properties:
+      ParentId: !GetAtt SignupAPI.RootResourceId
+      PathPart: 'signup'
+      RestApiId: !Ref SignupAPI
+
+  ApiMethod:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: POST
+      ResourceId: !Ref ApiResource
+      RestApiId: !Ref SignupAPI
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${SignupWorker.Arn}/invocations'
+
+  LambdaPermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref SignupWorker
+      Principal: apigateway.amazonaws.com
+
+  FixyachipsMasterRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: [lambda.amazonaws.com] }
+            Action: ['sts:AssumeRole']
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: FixyachipsAIPowerhouse
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ['s3:*', 'dynamodb:*', 'ses:SendEmail', 'bedrock:*', 'transcribe:*', 'translate:*', 'polly:*']
+                Resource: '*'
+
+  FixyachipsUserPool:
+    Type: 'AWS::Cognito::UserPool'
+    Properties:
+      UserPoolName: !Sub 'Fixyachips_Global_Users-${AWS::StackName}'
+      UsernameAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Mutable: true
+          Required: true
+        - Name: veteran_status
+          AttributeDataType: String
+          Mutable: true
+        - Name: industry_segment
+          AttributeDataType: String
+          Mutable: true
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+          RequireUppercase: true
+
+  FixyachipsUserPoolClient:
+    Type: 'AWS::Cognito::UserPoolClient'
+    Properties:
+      ClientName: Fixyachips_Web_Portal
+      UserPoolId: !Ref FixyachipsUserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+        - ALLOW_USER_SRP_AUTH
+
+Outputs:
+  SignupApiUrl:
+    Value: !Sub 'https://${SignupAPI}.execute-api.${AWS::Region}.amazonaws.com/prod/signup'
+  UserPoolId:
+    Value: !Ref FixyachipsUserPool
+  UserPoolClientId:
+    Value: !Ref FixyachipsUserPoolClient

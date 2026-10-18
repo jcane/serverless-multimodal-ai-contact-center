@@ -1,0 +1,168 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Fixyachips Global v3.9: Pro-Tier Optimized with OAC, Global Edge, Origin Shield, and AI Suite'
+
+Parameters:
+  AdminEmail:
+    Type: String
+    Default: 'info@fixyachips.com'
+
+Resources:
+  # 1. THE LOCK (Origin Access Control)
+  EmpireOAC:
+    Type: 'AWS::CloudFront::OriginAccessControl'
+    Properties: 
+      OriginAccessControlConfig: 
+        Name: !Sub 'Empire-OAC-${AWS::StackName}'
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # 2. THE EDGE ROUTER (Handles .html logic)
+  WebsiteRouterFunction:
+    Type: 'AWS::CloudFront::Function'
+    Properties:
+      Name: !Sub 'FixRouter-${AWS::StackName}'
+      AutoPublish: true
+      FunctionConfig:
+        Comment: 'Fixes .html paths'
+        Runtime: 'cloudfront-js-1.0'
+      FunctionCode: |
+        function handler(event) {
+          var request = event.request;
+          var uri = request.uri;
+          if (uri.endsWith('/')) { request.uri += 'index.html'; }
+          else if (!uri.includes('.')) { request.uri += '.html'; }
+          return request;
+        }
+
+  # 3. THE STORAGE (Secured S3 Bucket)
+  StreamingVideoBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Sub 'fixyachips-platform-${AWS::AccountId}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ['*']
+            AllowedMethods: [GET, POST, PUT]
+            AllowedOrigins: ['*']
+
+  # 4. THE PERMISSIONS (Handshake between S3 and CloudFront)
+  BucketPolicy:
+    Type: 'AWS::S3::BucketPolicy'
+    Properties:
+      Bucket: !Ref StreamingVideoBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: 's3:GetObject'
+            Resource: !Sub 'arn:aws:s3:::${StreamingVideoBucket}/*'
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub 'arn:aws:partition:cloudfront::${AWS::AccountId}:distribution/${WebsiteDistribution}'
+
+  # 5. THE GLOBAL WEBSITE (CloudFront Distribution)
+  WebsiteDistribution:
+    Type: 'AWS::CloudFront::Distribution'
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        PriceClass: PriceClass_All
+        DefaultRootObject: index.html
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt StreamingVideoBucket.RegionalDomainName
+            S3OriginConfig:
+              OriginAccessIdentity: "" 
+            OriginAccessControlId: !GetAtt EmpireOAC.Id
+            # ORIGIN SHIELD: THE REASON FOR THE SAVINGS
+            OriginShield:
+              Enabled: true
+              OriginShieldRegion: us-east-1
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          ForwardedValues:
+            QueryString: false
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+
+  # 6. DATABASE (DynamoDB for Students)
+  StudentTable:
+    Type: 'AWS::DynamoDB::Table'
+    Properties:
+      TableName: !Sub 'FixyachipsStudents-${AWS::StackName}'
+      AttributeDefinitions: [{AttributeName: StudentID, AttributeType: S}]
+      KeySchema: [{AttributeName: StudentID, KeyType: HASH}]
+      BillingMode: PAY_PER_REQUEST
+
+  # 7. THE BRAINS (IAM Role for AI/ML Superpowers)
+  FixyachipsMasterRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: [lambda.amazonaws.com] }
+            Action: ['sts:AssumeRole']
+      ManagedPolicyArns: ['arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole']
+      Policies:
+        - PolicyName: FixyachipsAIPowerhouse
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: 
+                  - 's3:*'
+                  - 'dynamodb:*'
+                  - 'ses:SendEmail'
+                  - 'bedrock:*'
+                  - 'transcribe:*'
+                  - 'translate:*'
+                  - 'polly:*'
+                Resource: '*'
+
+  # 8. COGNITO (User Login & Sign-up)
+  FixyachipsUserPool:
+    Type: 'AWS::Cognito::UserPool'
+    Properties:
+      UserPoolName: !Sub 'Fixyachips_Global_Users-${AWS::StackName}'
+      UsernameAttributes: [email]
+      AutoVerifiedAttributes: [email]
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Mutable: true
+          Required: true
+        - Name: veteran_status
+          AttributeDataType: String
+          Mutable: true
+        - Name: industry_segment
+          AttributeDataType: String
+          Mutable: true
+
+  FixyachipsUserPoolClient:
+    Type: 'AWS::Cognito::UserPoolClient'
+    Properties:
+      ClientName: Fixyachips_Web_Portal
+      UserPoolId: !Ref FixyachipsUserPool
+      GenerateSecret: false
+      ExplicitAuthFlows: [ALLOW_USER_PASSWORD_AUTH, ALLOW_REFRESH_TOKEN_AUTH, ALLOW_USER_SRP_AUTH]
+
+Outputs:
+  WebsiteURL:
+    Value: !GetAtt WebsiteDistribution.DomainName
+  S3Bucket:
+    Value: !Ref StreamingVideoBucket
+  UserPoolId:
+    Value: !Ref FixyachipsUserPool

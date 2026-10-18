@@ -1,0 +1,669 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Fixyachips Global v4.1.1: Drift-Corrected Hardened Stack - Custom Domain, Dual WAF, Throttling, Alarms, Budget Guard'
+
+# ============================================================
+# WHAT'S IN THIS FILE (v4.1.1 - DRIFT CORRECTED)
+# ============================================================
+# Changes from v4.1:
+# - Added CertificateArn parameter (was missing - caused drift)
+# - Added Aliases + ViewerCertificate to WebsiteDistribution
+#   (matches live state, fixes "SSL certificate doesn't exist" error)
+# - Renamed ApiDeployment to ApiDeploymentV2 to force clean
+#   recreation (fixes "StageName cannot be updated" error)
+# ============================================================
+
+Parameters:
+  AdminEmail:
+    Type: String
+    Default: 'info@fixyachips.com'
+    Description: 'Email for admin notifications, alarms, and budget alerts'
+
+  CertificateArn:
+    Type: String
+    Default: 'arn:aws:acm:us-east-1:980049663300:certificate/f18b7918-a24d-4a36-bfe4-34a114d4ccaf'
+    Description: 'ACM certificate ARN in us-east-1 for fixyachips.com (must be us-east-1 for CloudFront)'
+
+Resources:
+
+  # ============================================================
+  # 1. THE LOCK (Origin Access Control)
+  # ============================================================
+  EmpireOAC:
+    Type: 'AWS::CloudFront::OriginAccessControl'
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub 'Empire-OAC-${AWS::StackName}'
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # ============================================================
+  # 2. THE BODYGUARD (CloudFront WAF)
+  # ============================================================
+  WebBodyguard:
+    Type: 'AWS::WAFv2::WebACL'
+    Properties:
+      Name: !Sub 'FixyachipsShield-${AWS::StackName}'
+      Scope: CLOUDFRONT
+      DefaultAction: { Allow: {} }
+      VisibilityConfig:
+        SampledRequestsEnabled: true
+        CloudWatchMetricsEnabled: true
+        MetricName: FixyachipsWAF
+      Rules:
+        - Name: AWS-AWSManagedRulesCommonRuleSet
+          Priority: 0
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesCommonRuleSet
+          OverrideAction: { None: {} }
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: CommonRules
+        - Name: AWS-AWSManagedRulesBotControlRuleSet
+          Priority: 1
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesBotControlRuleSet
+              ManagedRuleGroupConfigs:
+                - AWSManagedRulesBotControlRuleSet:
+                    InspectionLevel: COMMON
+          OverrideAction: { None: {} }
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: BotControl
+
+  # ============================================================
+  # 3. THE EDGE ROUTER (CloudFront Function)
+  # ============================================================
+  WebsiteRouterFunction:
+    Type: 'AWS::CloudFront::Function'
+    Properties:
+      Name: !Sub 'FixRouter-${AWS::StackName}'
+      AutoPublish: true
+      FunctionConfig:
+        Comment: 'Fixes .html paths for clean URLs'
+        Runtime: 'cloudfront-js-1.0'
+      FunctionCode: |
+        function handler(event) {
+          var request = event.request;
+          var uri = request.uri;
+          if (uri.endsWith('/')) { request.uri += 'index.html'; }
+          else if (!uri.includes('.')) { request.uri += '.html'; }
+          return request;
+        }
+
+  # ============================================================
+  # 4. THE STORAGE (S3 Bucket - Retained on Delete)
+  # ============================================================
+  StreamingVideoBucket:
+    Type: 'AWS::S3::Bucket'
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub 'fixyachips-platform-${AWS::AccountId}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ['*']
+            AllowedMethods: [GET, POST, PUT]
+            AllowedOrigins:
+              - 'https://fixyachips.com'
+              - 'https://www.fixyachips.com'
+
+  # ============================================================
+  # 5. THE HANDSHAKE (Bucket Policy)
+  # ============================================================
+  BucketPolicy:
+    Type: 'AWS::S3::BucketPolicy'
+    Properties:
+      Bucket: !Ref StreamingVideoBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: 's3:GetObject'
+            Resource: !Sub 'arn:aws:s3:::${StreamingVideoBucket}/*'
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${WebsiteDistribution}'
+
+  # ============================================================
+  # 6. THE GLOBAL WEBSITE (CloudFront Distribution)
+  # v4.1.1: Aliases + ViewerCertificate added to match live state.
+  # ============================================================
+  WebsiteDistribution:
+    Type: 'AWS::CloudFront::Distribution'
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        PriceClass: PriceClass_All
+        DefaultRootObject: index.html
+        WebACLId: !GetAtt WebBodyguard.Arn
+        Aliases:
+          - fixyachips.com
+          - www.fixyachips.com
+        ViewerCertificate:
+          AcmCertificateArn: !Ref CertificateArn
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2021
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt StreamingVideoBucket.RegionalDomainName
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+            OriginAccessControlId: !GetAtt EmpireOAC.Id
+            OriginShield:
+              Enabled: true
+              OriginShieldRegion: us-east-1
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          ForwardedValues:
+            QueryString: false
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+
+  # ============================================================
+  # 7. THE DATABASE (DynamoDB)
+  # ============================================================
+  StudentTable:
+    Type: 'AWS::DynamoDB::Table'
+    DeletionPolicy: Retain
+    Properties:
+      TableName: !Sub 'FixyachipsStudents-${AWS::StackName}'
+      AttributeDefinitions:
+        - AttributeName: StudentID
+          AttributeType: S
+      KeySchema:
+        - AttributeName: StudentID
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+
+  # ============================================================
+  # 8. THE BRAINS (IAM Role)
+  # ============================================================
+  FixyachipsMasterRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: [lambda.amazonaws.com] }
+            Action: ['sts:AssumeRole']
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: FixyachipsAIPowerhouse
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                  - 's3:PutObject'
+                  - 's3:DeleteObject'
+                  - 's3:ListBucket'
+                Resource:
+                  - !Sub 'arn:aws:s3:::${StreamingVideoBucket}'
+                  - !Sub 'arn:aws:s3:::${StreamingVideoBucket}/*'
+              - Effect: Allow
+                Action:
+                  - 'dynamodb:GetItem'
+                  - 'dynamodb:PutItem'
+                  - 'dynamodb:UpdateItem'
+                  - 'dynamodb:DeleteItem'
+                  - 'dynamodb:Query'
+                  - 'dynamodb:Scan'
+                Resource: !GetAtt StudentTable.Arn
+              - Effect: Allow
+                Action:
+                  - 'ses:SendEmail'
+                  - 'bedrock:*'
+                  - 'transcribe:*'
+                  - 'translate:*'
+                  - 'polly:*'
+                Resource: '*'
+
+  # ============================================================
+  # 9. THE SIGNUP WORKER (Lambda Function)
+  # ============================================================
+  SignupWorker:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      FunctionName: !Sub 'FixyachipsSignupWorker-${AWS::StackName}'
+      Handler: index.lambda_handler
+      Runtime: python3.12
+      Role: !GetAtt FixyachipsMasterRole.Arn
+      Timeout: 30
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref StudentTable
+          ADMIN_EMAIL: !Ref AdminEmail
+      Code:
+        ZipFile: |
+          import json, boto3, uuid, os
+          dynamodb = boto3.resource('dynamodb')
+          ses = boto3.client('ses')
+          table = dynamodb.Table(os.environ['TABLE_NAME'])
+
+          def lambda_handler(event, context):
+
+              if event.get('httpMethod') == 'OPTIONS':
+                  return {
+                      'statusCode': 200,
+                      'headers': {
+                          'Access-Control-Allow-Origin': 'https://fixyachips.com',
+                          'Access-Control-Allow-Headers': 'Content-Type',
+                          'Access-Control-Allow-Methods': 'POST, OPTIONS'
+                      },
+                      'body': ''
+                  }
+              try:
+                  body = json.loads(event['body'])
+                  email = body.get('email', '').strip().lower()
+                  name = body.get('name', '').strip()
+
+                  if not email or not name:
+                      return {
+                          'statusCode': 400,
+                          'headers': {'Access-Control-Allow-Origin': 'https://fixyachips.com'},
+                          'body': json.dumps({'error': 'Name and email are required'})
+                      }
+
+                  table.put_item(Item={
+                      'StudentID': str(uuid.uuid4()),
+                      'Name': name,
+                      'Email': email,
+                      'Status': 'WAITLIST',
+                      'Source': body.get('source', 'website'),
+                      'Industry': body.get('industry', 'unknown')
+                  })
+
+                  ses.send_email(
+                      Source=os.environ['ADMIN_EMAIL'],
+                      Destination={'ToAddresses': [email]},
+                      Message={
+                          'Subject': {'Data': 'Welcome to the No-Drill Revolution - Fixyachips Academy'},
+                          'Body': {'Text': {'Data': 'Hello ' + name + ',\n\nYou are now on the waitlist for Fixyachips Global Academy.\n\nYou are about to learn the same trade secret No-Drill windshield repair methodology passed down since 1972 - personally taught to Joshua Cane by the pioneers themselves.\n\nThis is not just a course. This is a business in a box.\n\nWe will notify you the moment enrollment opens.\n\nJoshua Cane\nFounder, Fixyachips Global Academy\nCustodian of the 1972 No-Drill Methodology'}}
+                      }
+                  )
+
+                  ses.send_email(
+                      Source=os.environ['ADMIN_EMAIL'],
+                      Destination={'ToAddresses': [os.environ['ADMIN_EMAIL']]},
+                      Message={
+                          'Subject': {'Data': f'New Waitlist Signup: {name}'},
+                          'Body': {'Text': {'Data': f'New signup:\nName: {name}\nEmail: {email}\nIndustry: {body.get("industry", "unknown")}'}}
+                      }
+                  )
+
+                  return {
+                      'statusCode': 200,
+                      'headers': {
+                          'Access-Control-Allow-Origin': 'https://fixyachips.com',
+                          'Content-Type': 'application/json'
+                      },
+                      'body': json.dumps({'status': 'success', 'message': 'Welcome to the revolution!'})
+                  }
+
+              except Exception as e:
+                  print(f"ERROR: {str(e)}")
+                  return {
+                      'statusCode': 500,
+                      'headers': {'Access-Control-Allow-Origin': 'https://fixyachips.com'},
+                      'body': json.dumps({'error': 'Signup failed. Please try again.'})
+                  }
+
+  # ============================================================
+  # 10. CLOUDWATCH LOGS (Lambda Log Group)
+  # ============================================================
+  SignupWorkerLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/FixyachipsSignupWorker-${AWS::StackName}'
+      RetentionInDays: 30
+
+  # ============================================================
+  # 11. THE FRONT DOOR (API Gateway)
+  # ============================================================
+  SignupAPI:
+    Type: 'AWS::ApiGateway::RestApi'
+    Properties:
+      Name: !Sub 'FixyachipsAPI-${AWS::StackName}'
+      Description: 'Fixyachips Signup and Course API'
+
+  # ============================================================
+  # 12. THE ROUTE (/signup resource)
+  # ============================================================
+  ApiResource:
+    Type: 'AWS::ApiGateway::Resource'
+    Properties:
+      ParentId: !GetAtt SignupAPI.RootResourceId
+      PathPart: 'signup'
+      RestApiId: !Ref SignupAPI
+
+  # ============================================================
+  # 13. THE METHODS (POST + CORS OPTIONS)
+  # ============================================================
+  ApiMethod:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: POST
+      ResourceId: !Ref ApiResource
+      RestApiId: !Ref SignupAPI
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${SignupWorker.Arn}/invocations'
+
+  ApiOptionsMethod:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: OPTIONS
+      ResourceId: !Ref ApiResource
+      RestApiId: !Ref SignupAPI
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${SignupWorker.Arn}/invocations'
+
+  # ============================================================
+  # 14. THE DEPLOYMENT (v4.1.1: Renamed to V2 to force recreation)
+  # ============================================================
+  ApiDeploymentV2:
+    Type: 'AWS::ApiGateway::Deployment'
+    DependsOn:
+      - ApiMethod
+      - ApiOptionsMethod
+    Properties:
+      RestApiId: !Ref SignupAPI
+      Description: 'v4.1.1 deployment paired with throttled ApiStage'
+
+  # ============================================================
+  # 15. THE STAGE (Throttling layer)
+  # ============================================================
+  ApiStage:
+    Type: 'AWS::ApiGateway::Stage'
+    Properties:
+      StageName: prod
+      RestApiId: !Ref SignupAPI
+      DeploymentId: !Ref ApiDeploymentV2
+      MethodSettings:
+        - ResourcePath: '/*'
+          HttpMethod: '*'
+          ThrottlingRateLimit: 10
+          ThrottlingBurstLimit: 20
+          MetricsEnabled: true
+
+  # ============================================================
+  # 16. LAMBDA PERMISSION
+  # ============================================================
+  LambdaPermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref SignupWorker
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${SignupAPI}/*'
+
+  # ============================================================
+  # 17. COGNITO USER POOL
+  # ============================================================
+  FixyachipsUserPool:
+    Type: 'AWS::Cognito::UserPool'
+    Properties:
+      UserPoolName: !Sub 'Fixyachips_Global_Users-${AWS::StackName}'
+      UsernameAttributes: [email]
+      AutoVerifiedAttributes: [email]
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+          RequireUppercase: true
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Mutable: true
+          Required: true
+        - Name: veteran_status
+          AttributeDataType: String
+          Mutable: true
+        - Name: industry_segment
+          AttributeDataType: String
+          Mutable: true
+
+  # ============================================================
+  # 18. COGNITO USER POOL CLIENT
+  # ============================================================
+  FixyachipsUserPoolClient:
+    Type: 'AWS::Cognito::UserPoolClient'
+    Properties:
+      ClientName: Fixyachips_Web_Portal
+      UserPoolId: !Ref FixyachipsUserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+        - ALLOW_USER_SRP_AUTH
+
+  # ============================================================
+  # 19. REGIONAL WAF ON API GATEWAY
+  # ============================================================
+  ApiWAF:
+    Type: 'AWS::WAFv2::WebACL'
+    Properties:
+      Name: !Sub 'FixyachipsAPIShield-${AWS::StackName}'
+      Scope: REGIONAL
+      DefaultAction: { Allow: {} }
+      VisibilityConfig:
+        SampledRequestsEnabled: true
+        CloudWatchMetricsEnabled: true
+        MetricName: FixyachipsAPIWAF
+      Rules:
+        - Name: RateLimitPerIP
+          Priority: 0
+          Statement:
+            RateBasedStatement:
+              Limit: 100
+              AggregateKeyType: IP
+          Action: { Block: {} }
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: APIRateLimit
+        - Name: CommonRules
+          Priority: 1
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesCommonRuleSet
+          OverrideAction: { None: {} }
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: APICommonRules
+
+  # ============================================================
+  # 20. WAF ASSOCIATION
+  # ============================================================
+  ApiWAFAssociation:
+    Type: 'AWS::WAFv2::WebACLAssociation'
+    DependsOn: ApiStage
+    Properties:
+      ResourceArn: !Sub 'arn:aws:apigateway:${AWS::Region}::/restapis/${SignupAPI}/stages/prod'
+      WebACLArn: !GetAtt ApiWAF.Arn
+
+  # ============================================================
+  # 21. SNS ALARM TOPIC
+  # ============================================================
+  AlarmTopic:
+    Type: 'AWS::SNS::Topic'
+    Properties:
+      TopicName: !Sub 'FixyachipsAlarms-${AWS::StackName}'
+
+  # ============================================================
+  # 22. EMAIL SUBSCRIPTION
+  # IMPORTANT: After deploy, check info@fixyachips.com inbox
+  # for AWS confirmation email. Click confirm or alarms are silent.
+  # ============================================================
+  AlarmEmailSub:
+    Type: 'AWS::SNS::Subscription'
+    Properties:
+      TopicArn: !Ref AlarmTopic
+      Protocol: email
+      Endpoint: !Ref AdminEmail
+
+  # ============================================================
+  # 23. API FLOOD ALARM
+  # ============================================================
+  ApiFloodAlarm:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: !Sub 'Fixyachips-API-Flood-${AWS::StackName}'
+      AlarmDescription: 'Possible attack: high request count on signup API'
+      MetricName: Count
+      Namespace: AWS/ApiGateway
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 500
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: ApiName
+          Value: !Sub 'FixyachipsAPI-${AWS::StackName}'
+        - Name: Stage
+          Value: prod
+      AlarmActions: [!Ref AlarmTopic]
+      TreatMissingData: notBreaching
+
+  # ============================================================
+  # 24. LAMBDA ERROR ALARM
+  # ============================================================
+  LambdaErrorAlarm:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: !Sub 'Fixyachips-Lambda-Errors-${AWS::StackName}'
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref SignupWorker
+      AlarmActions: [!Ref AlarmTopic]
+      TreatMissingData: notBreaching
+
+  # ============================================================
+  # 25. WAF BLOCK ALARM
+  # ============================================================
+  WAFBlockAlarm:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: !Sub 'Fixyachips-WAF-Blocks-${AWS::StackName}'
+      MetricName: BlockedRequests
+      Namespace: AWS/WAFV2
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 50
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: WebACL
+          Value: !Sub 'FixyachipsAPIShield-${AWS::StackName}'
+        - Name: Region
+          Value: !Ref AWS::Region
+        - Name: Rule
+          Value: ALL
+      AlarmActions: [!Ref AlarmTopic]
+      TreatMissingData: notBreaching
+
+  # ============================================================
+  # 26. AWS BUDGET (last line of defense)
+  # ============================================================
+  CostBudget:
+    Type: 'AWS::Budgets::Budget'
+    Properties:
+      Budget:
+        BudgetName: !Sub 'Fixyachips-Monthly-${AWS::StackName}'
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit:
+          Amount: 50
+          Unit: USD
+      NotificationsWithSubscribers:
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 80
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref AdminEmail
+        - Notification:
+            NotificationType: FORECASTED
+            ComparisonOperator: GREATER_THAN
+            Threshold: 100
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref AdminEmail
+
+# ============================================================
+# OUTPUTS
+# ============================================================
+Outputs:
+  WebsiteURL:
+    Description: 'Your custom domain'
+    Value: 'https://fixyachips.com'
+
+  CloudFrontURL:
+    Description: 'Direct CloudFront URL (backup)'
+    Value: !GetAtt WebsiteDistribution.DomainName
+
+  SignupApiUrl:
+    Description: 'POST endpoint for waitlist signups'
+    Value: !Sub 'https://${SignupAPI}.execute-api.${AWS::Region}.amazonaws.com/prod/signup'
+
+  S3Bucket:
+    Description: 'Your video/content storage bucket'
+    Value: !Ref StreamingVideoBucket
+
+  UserPoolId:
+    Description: 'Cognito User Pool ID - needed for frontend auth'
+    Value: !Ref FixyachipsUserPool
+
+  UserPoolClientId:
+    Description: 'Cognito Client ID - needed for frontend auth'
+    Value: !Ref FixyachipsUserPoolClient
+
+  CloudFrontWAFArn:
+    Description: 'CloudFront WAF Web ACL ARN'
+    Value: !GetAtt WebBodyguard.Arn
+
+  ApiWAFArn:
+    Description: 'API Gateway WAF Web ACL ARN'
+    Value: !GetAtt ApiWAF.Arn
+
+  AlarmTopicArn:
+    Description: 'SNS topic for all CloudWatch alarms'
+    Value: !Ref AlarmTopic
+

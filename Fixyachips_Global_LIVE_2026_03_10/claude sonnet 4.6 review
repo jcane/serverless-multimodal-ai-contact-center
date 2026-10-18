@@ -1,0 +1,3185 @@
+User: You are a Principal AWS Serverless Architect and FinOps Security Expert. Review the attached YAML deployment file for fixyachips.com—a global Serverless VOD academy streaming video assets to over 120 countries in 8 languages (English, Spanish, Portuguese, French, Italian, German, Polish, Swedish).
+
+    Execute an exhaustive, line-by-line audit optimized for Claude 4.6 Sonnet's core reasoning strengths. Break your analysis down into the following 5 strict vectors:
+    1. Cost Optimization & FinOps (Protecting the Bottom Line)
+
+        CloudFront Egress: Analyze caching policies and TTL settings. Ensure we are utilizing PriceClass_All or PriceClass_200 intelligently to support our 120+ global regions without overpaying for low-priority edge locations.
+
+        S3 Storage Tiering: Check if Intelligent-Tiering or Lifecycle Policies are defined for the VOD media assets (MP4/HLS/DASH fragments) to drop storage costs as older content dips in viewership.
+
+        Lambda/MediaConvert Tuning: Audit memory allocations and timeouts. Flag any over-provisioned Lambda functions or compute resources that will bleed money during high-concurrency event surges.
+
+    2. Syntax, Structural Errors & Omissions
+
+        Sanity check all YAML indentations, pseudo-parameters, intrinsic functions (!Ref, !Sub, !GetAtt), and circular dependencies.
+
+        Identify missing environment variables, dead routing paths, or unconfigured dead-letter queues (DLQs) for asynchronous event states.
+
+        Ensure CloudFront Origin Shield is explicitly configured if applicable, protecting our origin S3 buckets from redundant request spikes across 120 countries.
+
+    3. Web-to-TV Stream Conversion & VOD Delivery
+
+        HLS/DASH Formatting: Ensure the CloudFront behavior headers support optimized video streaming delivery to diverse clients (Desktop, Mobile, Smart TVs, streaming sticks).
+
+        CORS & Range Requests: Verify that HTTP Range requests are explicitly allowed in the CloudFront cache behavior to enable instant video scrubbing, fast-forwarding, and resume-play capabilities on modern TVs.
+
+        Media Pipeline: Look for missing integrations with MediaConvert or media-optimized CDN optimizations.
+
+    4. Multi-Lingual Architecture (8 Core Languages)
+
+        Audit how the CDN caches and routes requests based on the 8 core language profiles (EN, ES, PT, FR, IT, DE, PL, SV).
+
+        Ensure CloudFront is configured to handle language routing via clean path patterns (e.g., /es/*, /de/*) or tracking query strings/headers (Accept-Language) without splitting the cache so badly that it destroys our global cache-hit ratio.
+
+    5. The "What Am I Missing?" Deep Security Blindspots
+
+        Cybersecurity & Compliance: Audit the IAM roles for strict Least Privilege enforcement. Check for public S3 bucket exposure, missing AWS WAF (Web Application Firewall) attachments to block international botnets, and proper CloudFront-to-S3 Origin Access Control (OAC).
+
+        Geo-Restriction/Localization: Ensure Geo-Blocking features or routing architectures are structured safely if regional licensing dictates variations in asset delivery.
+
+    OUTPUT FORMAT: Print only highly actionable, bulleted engineering feedback. Group findings by severity (CRITICAL ERROR, FINOPS SAVINGS, ARCHITECTURAL ENHANCEMENT). For every issue identified, provide the exact corrected YAML code block ready to be swapped into production.
+User: fileNode cloudformation template v1.pdf
+Model: # Fixyachips Global v4.0 — Exhaustive CloudFormation Audit Report
+
+---
+
+## VECTOR 1: COST OPTIMIZATION & FINOPS
+
+---
+
+**FINOPS SAVINGS — S3 Intelligent-Tiering & Lifecycle Policy: COMPLETELY ABSENT**
+
+- `StreamingVideoBucket` has zero lifecycle rules. VOD MP4/HLS/DASH fragments that drop below 5% weekly viewership after 90 days are sitting in S3 Standard at full price. For a 120-country academy with a growing content library, this is a slow financial bleed.
+- Add Intelligent-Tiering transition at 30 days and archive transitions at 90/180 days:
+
+```yaml
+StreamingVideoBucket:
+  Type: 'AWS::S3::Bucket'
+  Properties:
+    BucketName: !Sub 'fixyachips-platform-${AWS::AccountId}'
+    PublicAccessBlockConfiguration:
+      BlockPublicAcls: true
+      BlockPublicPolicy: true
+      IgnorePublicAcls: true
+      RestrictPublicBuckets: true
+    IntelligentTieringConfigurations:
+      - Id: VODIntelligentTiering
+        Status: Enabled
+        Tierings:
+          - AccessTier: ARCHIVE_ACCESS
+            Days: 90
+          - AccessTier: DEEP_ARCHIVE_ACCESS
+            Days: 180
+    LifecycleConfiguration:
+      Rules:
+        - Id: TransitionVODToIntelligentTiering
+          Status: Enabled
+          Prefix: 'vod/'
+          Transitions:
+            - TransitionInDays: 30
+              StorageClass: INTELLIGENT_TIERING
+        - Id: TransitionHLSSegments
+          Status: Enabled
+          Prefix: 'hls/'
+          Transitions:
+            - TransitionInDays: 30
+              StorageClass: INTELLIGENT_TIERING
+        - Id: TransitionDASHSegments
+          Status: Enabled
+          Prefix: 'dash/'
+          Transitions:
+            - TransitionInDays: 30
+              StorageClass: INTELLIGENT_TIERING
+        - Id: ExpireIncompleteMultipartUploads
+          Status: Enabled
+          AbortIncompleteMultipartUpload:
+            DaysAfterInitiation: 7
+    CorsConfiguration:
+      CorsRules:
+        - AllowedHeaders: ['*']
+          AllowedMethods: [GET, HEAD]
+          AllowedOrigins:
+            - 'https://fixyachips.com'
+            - 'https://www.fixyachips.com'
+          ExposeHeaders:
+            - 'Content-Length'
+            - 'Content-Range'
+            - 'ETag'
+          MaxAge: 3600
+```
+
+---
+
+**FINOPS SAVINGS — S3 CORS: POST and PUT Methods Exposed on a VOD Read-Only Bucket**
+
+- `AllowedMethods: [GET, POST, PUT]` on a CDN-served video bucket is dangerous AND costly. POST/PUT opens the bucket to potential data exfiltration attempts and unnecessary preflight complexity. CloudFront serves reads only. Strip to `[GET, HEAD]` and add `ExposeHeaders` for Range request support (see above corrected block).
+
+---
+
+**FINOPS SAVINGS — Lambda Memory Allocation: Not Specified (AWS Defaults to 128MB)**
+
+- `SignupWorker` has no `MemorySize` property. AWS defaults to 128MB. For a Python function doing DynamoDB writes + two SES sends, 128MB causes cold starts lasting 800ms–1.2s. At scale with 120 countries hitting signup simultaneously, this multiplies Lambda duration billing. Set 256MB to cut execution time by ~40% and reduce total compute cost:
+
+```yaml
+SignupWorker:
+  Type: 'AWS::Lambda::Function'
+  Properties:
+    FunctionName: !Sub 'FixyachipsSignupWorker-${AWS::StackName}'
+    Handler: index.lambda_handler
+    Runtime: python3.12
+    Role: !GetAtt FixyachipsMasterRole.Arn
+    Timeout: 15        # REDUCED: SES + DynamoDB never needs 30s; 15s is generous
+    MemorySize: 256    # ADDED: eliminates cold-start penalty, reduces billed duration
+    ReservedConcurrentExecutions: 100  # ADDED: prevents runaway Lambda spend during bot surges
+    Environment:
+      Variables:
+        TABLE_NAME: !Ref StudentTable
+        ADMIN_EMAIL: !Ref AdminEmail
+        FROM_EMAIL: !Ref AdminEmail
+```
+
+---
+
+**FINOPS SAVINGS — CloudFront DefaultCacheBehavior: Missing TTL Configuration**
+
+- `DefaultCacheBehavior` has no `DefaultTTL`, `MinTTL`, or `MaxTTL`. CloudFront falls back to origin headers. If S3 objects have no `Cache-Control` headers set, CloudFront defaults to 24 hours which may be acceptable for HTML but catastrophic for VOD segments that should cache for 30+ days. Without explicit TTLs, every Origin Shield miss hits S3 and generates egress charges. Add a managed cache policy tuned for VOD:
+
+```yaml
+# Add this new resource for VOD cache policy
+VODCachePolicy:
+  Type: 'AWS::CloudFront::CachePolicy'
+  Properties:
+    CachePolicyConfig:
+      Name: !Sub 'FixyachipsVODCachePolicy-${AWS::StackName}'
+      Comment: 'Optimized for HLS/DASH VOD segments - aggressive caching'
+      DefaultTTL: 2592000      # 30 days
+      MaxTTL: 31536000         # 365 days
+      MinTTL: 86400            # 1 day minimum
+      ParametersInCacheKeyAndForwardedToOrigin:
+        EnableAcceptEncodingGzip: true
+        EnableAcceptEncodingBrotli: true
+        HeadersConfig:
+          HeaderBehavior: none
+        CookiesConfig:
+          CookieBehavior: none
+        QueryStringsConfig:
+          QueryStringBehavior: none
+
+# Add this new resource for static/HTML cache policy
+WebCachePolicy:
+  Type: 'AWS::CloudFront::CachePolicy'
+  Properties:
+    CachePolicyConfig:
+      Name: !Sub 'FixyachipsWebCachePolicy-${AWS::StackName}'
+      Comment: 'For HTML/JS/CSS - shorter TTL to allow updates'
+      DefaultTTL: 86400        # 1 day
+      MaxTTL: 604800           # 7 days
+      MinTTL: 0
+      ParametersInCacheKeyAndForwardedToOrigin:
+        EnableAcceptEncodingGzip: true
+        EnableAcceptEncodingBrotli: true
+        HeadersConfig:
+          HeaderBehavior: none
+        CookiesConfig:
+          CookieBehavior: none
+        QueryStringsConfig:
+          QueryStringBehavior: none
+```
+
+---
+
+**FINOPS SAVINGS — WAF BotControl COMMON Tier Cost vs. TARGETED Tier**
+
+- `AWSManagedRulesBotControlRuleSet` at `COMMON` inspection level costs ~$10/month base + per-request charges. This is correct for the current stage. However, `bedrock:*`, `transcribe:*`, `translate:*`, `polly:*` on the IAM role with `Resource: '*'` will generate unbounded AI/ML costs if the Lambda is ever invoked incorrectly or the role is compromised. Scope these down immediately (see Vector 5).
+
+---
+
+**FINOPS SAVINGS — Origin Shield Region: us-east-1 Hardcoded**
+
+- Your primary audience spans Europe (ES, PT, FR, IT, DE, PL, SV) and Latin America. Origin Shield in `us-east-1` adds unnecessary inter-region hop latency for European viewers and still bills for Origin Shield requests at $0.0075–$0.012 per 10,000 requests. For a European-heavy language profile, `eu-west-1` (Ireland) or `eu-central-1` (Frankfurt) cuts both latency and cost. Make this a Parameter:
+
+```yaml
+Parameters:
+  AdminEmail:
+    Type: String
+    Default: 'info@fixyachips.com'
+  OriginShieldRegion:
+    Type: String
+    Default: 'eu-west-1'
+    AllowedValues:
+      - 'us-east-1'
+      - 'us-west-2'
+      - 'eu-west-1'
+      - 'eu-central-1'
+      - 'ap-southeast-1'
+      - 'ap-northeast-1'
+    Description: 'Choose closest region to your highest-density viewer base'
+```
+
+Then reference in the distribution:
+
+```yaml
+        OriginShield:
+          Enabled: true
+          OriginShieldRegion: !Ref OriginShieldRegion
+```
+
+---
+
+## VECTOR 2: SYNTAX, STRUCTURAL ERRORS & OMISSIONS
+
+---
+
+**CRITICAL ERROR — ForwardedValues and CachePolicyId Cannot Coexist**
+
+- The `DefaultCacheBehavior` uses `ForwardedValues: QueryString: false`. This is the legacy cache configuration method. It **cannot** be used alongside a `CachePolicyId`. You must choose one. AWS will reject the stack update if you attempt to add a CachePolicy while `ForwardedValues` exists. Replace the entire `DefaultCacheBehavior` block:
+
+```yaml
+    DefaultCacheBehavior:
+      TargetOriginId: S3Origin
+      ViewerProtocolPolicy: redirect-to-https
+      Compress: true
+      CachePolicyId: !Ref WebCachePolicy
+      OriginRequestPolicyId: !Ref VODOriginRequestPolicy
+      ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+      FunctionAssociations:
+        - EventType: viewer-request
+          FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+      AllowedMethods: [GET, HEAD, OPTIONS]
+      CachedMethods: [GET, HEAD, OPTIONS]
+```
+
+---
+
+**CRITICAL ERROR — Missing CacheBehaviors for VOD Assets (HLS/DASH/MP4)**
+
+- There is only a `DefaultCacheBehavior`. There are zero `CacheBehaviors` defined. This means your video segments (`/vod/*`, `/hls/*`, `/dash/*`) are served with the same policy as your HTML pages. This is architecturally broken for VOD delivery:
+
+```yaml
+    CacheBehaviors:
+      # HLS streaming segments - aggressive caching
+      - PathPattern: '/hls/*'
+        TargetOriginId: S3Origin
+        ViewerProtocolPolicy: redirect-to-https
+        Compress: false           # Never compress pre-compressed video
+        CachePolicyId: !Ref VODCachePolicy
+        OriginRequestPolicyId: !Ref VODOriginRequestPolicy
+        ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+        AllowedMethods: [GET, HEAD, OPTIONS]
+        CachedMethods: [GET, HEAD]
+      # DASH streaming segments
+      - PathPattern: '/dash/*'
+        TargetOriginId: S3Origin
+        ViewerProtocolPolicy: redirect-to-https
+        Compress: false
+        CachePolicyId: !Ref VODCachePolicy
+        OriginRequestPolicyId: !Ref VODOriginRequestPolicy
+        ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+        AllowedMethods: [GET, HEAD, OPTIONS]
+        CachedMethods: [GET, HEAD]
+      # MP4 progressive download
+      - PathPattern: '/vod/*'
+        TargetOriginId: S3Origin
+        ViewerProtocolPolicy: redirect-to-https
+        Compress: false
+        CachePolicyId: !Ref VODCachePolicy
+        OriginRequestPolicyId: !Ref VODOriginRequestPolicy
+        ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+        AllowedMethods: [GET, HEAD, OPTIONS]
+        CachedMethods: [GET, HEAD]
+      # Language-prefixed content paths (ES, PT, FR, IT, DE, PL, SV)
+      - PathPattern: '/es/*'
+        TargetOriginId: S3Origin
+        ViewerProtocolPolicy: redirect-to-https
+        Compress: true
+        CachePolicyId: !Ref WebCachePolicy
+        AllowedMethods: [GET, HEAD]
+        CachedMethods: [GET, HEAD]
+        FunctionAssociations:
+          - EventType: viewer-request
+            FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+      - PathPattern: '/pt/*'
+        TargetOriginId: S3Origin
+        ViewerProtocolPolicy: redirect-to-https
+        Compress: true
+        CachePolicyId: !Ref WebCachePolicy
+        AllowedMethods: [GET, HEAD]
+        CachedMethods: [GET, HEAD]
+        FunctionAssociations:
+          - EventType: viewer-request
+            FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+      - PathPattern: '/fr/*'
+        TargetOriginId: S3Origin
+        ViewerProtocolPolicy: redirect-to-https
+        Compress: true
+        CachePolicyId: !Ref WebCachePolicy
+        AllowedMethods: [GET, HEAD]
+        CachedMethods: [GET, HEAD]
+        FunctionAssociations:
+          - EventType: viewer-request
+            FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+      - PathPattern: '/de/*'
+        TargetOriginId: S3Origin
+        ViewerProtocolPolicy: redirect-to-https
+        Compress: true
+        CachePolicyId: !Ref WebCachePolicy
+        AllowedMethods: [GET, HEAD]
+        CachedMethods: [GET, HEAD]
+        FunctionAssociations:
+          - EventType: viewer-request
+            FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+      - PathPattern: '/it/*'
+        TargetOriginId: S3Origin
+        ViewerProtocolPolicy: redirect-to-https
+        Compress: true
+        CachePolicyId: !Ref WebCachePolicy
+        AllowedMethods: [GET, HEAD]
+        CachedMethods: [GET, HEAD]
+        FunctionAssociations:
+          - EventType: viewer-request
+            FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+      - PathPattern: '/pl/*'
+        TargetOriginId: S3Origin
+        ViewerProtocolPolicy: redirect-to-https
+        Compress: true
+        CachePolicyId: !Ref WebCachePolicy
+        AllowedMethods: [GET, HEAD]
+        CachedMethods: [GET, HEAD]
+        FunctionAssociations:
+          - EventType: viewer-request
+            FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+      - PathPattern: '/sv/*'
+        TargetOriginId: S3Origin
+        ViewerProtocolPolicy: redirect-to-https
+        Compress: true
+        CachePolicyId: !Ref WebCachePolicy
+        AllowedMethods: [GET, HEAD]
+        CachedMethods: [GET, HEAD]
+        FunctionAssociations:
+          - EventType: viewer-request
+            FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+```
+
+---
+
+**CRITICAL ERROR — ApiOptionsMethod Uses AWS_PROXY for OPTIONS: Will Fail CORS**
+
+- The `ApiOptionsMethod` is wired as `AWS_PROXY` pointing to Lambda. For CORS preflight (`OPTIONS`), the browser never includes a body. The Lambda handler returns OPTIONS correctly via code, BUT `AWS_PROXY` for OPTIONS should use `MOCK` integration with static headers to eliminate a Lambda invocation entirely. Every browser preflight hitting Lambda costs money and adds 50–200ms latency:
+
+```yaml
+ApiOptionsMethod:
+  Type: 'AWS::ApiGateway::Method'
+  Properties:
+    AuthorizationType: NONE
+    HttpMethod: OPTIONS
+    ResourceId: !Ref ApiResource
+    RestApiId: !Ref SignupAPI
+    Integration:
+      Type: MOCK
+      RequestTemplates:
+        application/json: '{"statusCode": 200}'
+      IntegrationResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
+            method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+            method.response.header.Access-Control-Allow-Origin: "'https://fixyachips.com'"
+          ResponseTemplates:
+            application/json: ''
+    MethodResponses:
+      - StatusCode: 200
+        ResponseParameters:
+          method.response.header.Access-Control-Allow-Headers: false
+          method.response.header.Access-Control-Allow-Methods: false
+          method.response.header.Access-Control-Allow-Origin: false
+```
+
+---
+
+**CRITICAL ERROR — Dead Letter Queue (DLQ) Missing on SignupWorker Lambda**
+
+- `SignupWorker` processes waitlist signups. If DynamoDB throttles or SES rejects a send, the event is silently dropped. There is zero DLQ configured. A failed signup during launch day (high concurrency surge) will lose real leads with no recovery path:
+
+```yaml
+# Add this SQS queue resource
+SignupWorkerDLQ:
+  Type: 'AWS::SQS::Queue'
+  Properties:
+    QueueName: !Sub 'FixyachipsSignupDLQ-${AWS::StackName}'
+    MessageRetentionPeriod: 1209600  # 14 days - max retention
+    KmsMasterKeyId: alias/aws/sqs    # Encrypt dead letters at rest
+
+# Add DeadLetterConfig to SignupWorker
+SignupWorker:
+  Type: 'AWS::Lambda::Function'
+  Properties:
+    # ... existing properties ...
+    DeadLetterConfig:
+      TargetArn: !GetAtt SignupWorkerDLQ.Arn
+```
+
+Also add SQS permissions to the IAM role:
+
+```yaml
+        - Effect: Allow
+          Action:
+            - 'sqs:SendMessage'
+          Resource: !GetAtt SignupWorkerDLQ.Arn
+```
+
+---
+
+**CRITICAL ERROR — CloudFront Distribution Missing Aliases and ViewerCertificate**
+
+- `WebsiteDistribution` has no `Aliases` (custom domain) and no `ViewerCertificate`. Without this, the distribution serves from `*.cloudfront.net`, not `fixyachips.com`. Students in 120 countries will see a naked CloudFront URL. Add:
+
+```yaml
+Parameters:
+  # Add these parameters
+  CertificateArn:
+    Type: String
+    Description: 'ACM Certificate ARN (must be in us-east-1) for fixyachips.com'
+    Default: ''
+  DomainName:
+    Type: String
+    Default: 'fixyachips.com'
+  WWWDomainName:
+    Type: String
+    Default: 'www.fixyachips.com'
+```
+
+```yaml
+    DistributionConfig:
+      Enabled: true
+      PriceClass: PriceClass_All
+      DefaultRootObject: index.html
+      Aliases:
+        - !Ref DomainName
+        - !Ref WWWDomainName
+      ViewerCertificate:
+        AcmCertificateArn: !Ref CertificateArn
+        SslSupportMethod: sni-only
+        MinimumProtocolVersion: TLSv1.2_2021   # Enforce modern TLS - critical for TV clients
+      WebACLId: !GetAtt WebBodyguard.Arn
+```
+
+---
+
+**CRITICAL ERROR — CloudFront Function Runtime cloudfront-js-1.0 is Deprecated**
+
+- `Runtime: 'cloudfront-js-1.0'` is the legacy runtime. AWS has released `cloudfront-js-2.0` which supports ES modules, async/await, and has significantly better performance. For an edge function running at 400+ PoPs globally, this matters:
+
+```yaml
+    FunctionConfig:
+      Comment: 'Fixes .html paths for clean URLs and language routing'
+      Runtime: 'cloudfront-js-2.0'
+    FunctionCode: |
+      async function handler(event) {
+        const request = event.request;
+        const uri = request.uri;
+        if (uri.endsWith('/')) {
+          request.uri += 'index.html';
+        } else if (!uri.includes('.')) {
+          request.uri += '.html';
+        }
+        return request;
+      }
+```
+
+---
+
+**ARCHITECTURAL ENHANCEMENT — Missing Logging Configuration on CloudFront Distribution**
+
+- No `Logging` configuration is defined on `WebsiteDistribution`. Without access logs, you have zero visibility into cache hit ratios per language path, geographic request patterns, or VOD playback failures across your 120 countries:
+
+```yaml
+# Add S3 bucket for CloudFront logs
+CloudFrontLogsBucket:
+  Type: 'AWS::S3::Bucket'
+  Properties:
+    BucketName: !Sub 'fixyachips-cf-logs-${AWS::AccountId}'
+    PublicAccessBlockConfiguration:
+      BlockPublicAcls: true
+      BlockPublicPolicy: true
+      IgnorePublicAcls: true
+      RestrictPublicBuckets: true
+    LifecycleConfiguration:
+      Rules:
+        - Id: ExpireOldLogs
+          Status: Enabled
+          ExpirationInDays: 90
+    OwnershipControls:
+      Rules:
+        - ObjectOwnership: BucketOwnerPreferred
+```
+
+```yaml
+    # Inside DistributionConfig:
+      Logging:
+        Bucket: !GetAtt CloudFrontLogsBucket.DomainName
+        Prefix: 'cloudfront-logs/'
+        IncludeCookies: false
+```
+
+---
+
+**ARCHITECTURAL ENHANCEMENT — DynamoDB Missing Point-in-Time Recovery (PITR)**
+
+- `StudentTable` has `DeletionPolicy: Retain` (good) but zero backup configuration. A corrupted write or accidental `DeleteItem` loop will permanently destroy student records. PITR costs $0.20/GB/month — trivially cheap for a student roster:
+
+```yaml
+StudentTable:
+  Type: 'AWS::DynamoDB::Table'
+  DeletionPolicy: Retain
+  UpdateReplacePolicy: Retain
+  Properties:
+    TableName: !Sub 'FixyachipsStudents-${AWS::StackName}'
+    AttributeDefinitions:
+      - AttributeName: StudentID
+        AttributeType: S
+      - AttributeName: Email
+        AttributeType: S
+    KeySchema:
+      - AttributeName: StudentID
+        KeyType: HASH
+    GlobalSecondaryIndexes:
+      - IndexName: EmailIndex
+        KeySchema:
+          - AttributeName: Email
+            KeyType: HASH
+        Projection:
+          ProjectionType: ALL
+    BillingMode: PAY_PER_REQUEST
+    PointInTimeRecoverySpecification:
+      PointInTimeRecoveryEnabled: true
+    SSESpecification:
+      SSEEnabled: true
+      SSEType: KMS
+```
+
+Note the `EmailIndex` GSI added above — without it, looking up a student by email (e.g., to prevent duplicate signups) requires a full `Scan` operation, which is costly and slow at scale.
+
+---
+
+**ARCHITECTURAL ENHANCEMENT — Missing Duplicate Email Check in Lambda**
+
+- The `SignupWorker` Lambda does `table.put_item()` directly without checking if the email already exists. A student who double-submits the form will create two `StudentID` records and receive two welcome emails. This is a data integrity failure and an SES reputation risk. The GSI above enables a cheap fix:
+
+```python
+# Add before table.put_item():
+existing = table.query(
+    IndexName='EmailIndex',
+    KeyConditionExpression='Email = :email',
+    ExpressionAttributeValues={':email': email},
+    Limit=1
+)
+if existing.get('Count', 0) > 0:
+    return {
+        'statusCode': 200,
+        'headers': {'Access-Control-Allow-Origin': 'https://fixyachips.com'},
+        'body': json.dumps({'status': 'already_registered', 
+                           'message': 'You are already on the list!'})
+    }
+```
+
+---
+
+## VECTOR 3: WEB-TO-TV STREAM CONVERSION & VOD DELIVERY
+
+---
+
+**CRITICAL ERROR — No Range Request Support Headers in CloudFront Response Policy**
+
+- HTTP Range requests (`Range: bytes=0-`) are the backbone of video scrubbing, fast-forward, and resume-play on every device from Chrome to Samsung TVs to Fire Sticks. CloudFront must explicitly pass `Range` headers to origin AND return the correct response headers. Without this, a Roku or Apple TV client requesting byte range 50MB into a 500MB MP4 will either fail or force a full download restart. Add an Origin Request Policy and Response Headers Policy:
+
+```yaml
+VODOriginRequestPolicy:
+  Type: 'AWS::CloudFront::OriginRequestPolicy'
+  Properties:
+    OriginRequestPolicyConfig:
+      Name: !Sub 'FixyachipsVODOriginRequest-${AWS::StackName}'
+      Comment: 'Forward Range and Origin headers for VOD byte-range serving'
+      HeadersConfig:
+        HeaderBehavior: whitelist
+        Headers:
+          - 'Origin'
+          - 'Access-Control-Request-Headers'
+          - 'Access-Control-Request-Method'
+          - 'Range'              # CRITICAL for video scrubbing
+      CookiesConfig:
+        CookieBehavior: none
+      QueryStringsConfig:
+        QueryStringBehavior: none
+
+VODResponseHeadersPolicy:
+  Type: 'AWS::CloudFront::ResponseHeadersPolicy'
+  Properties:
+    ResponseHeadersPolicyConfig:
+      Name: !Sub 'FixyachipsVODResponseHeaders-${AWS::StackName}'
+      Comment: 'CORS + security headers for VOD delivery'
+      CorsConfig:
+        AccessControlAllowCredentials: false
+        AccessControlAllowHeaders:
+          Items: ['*']
+        AccessControlAllowMethods:
+          Items: [GET, HEAD, OPTIONS]
+        AccessControlAllowOrigins:
+          Items:
+            - 'https://fixyachips.com'
+            - 'https://www.fixyachips.com'
+        AccessControlExposeHeaders:
+          Items:
+            - 'Content-Length'
+            - 'Content-Range'    # CRITICAL: allows player to track position
+            - 'ETag'
+            - 'Accept-Ranges'   # CRITICAL: signals byte-range support to players
+        AccessControlMaxAgeSec: 3600
+        OriginOverride: false
+      SecurityHeadersConfig:
+        ContentTypeOptions:
+          Override: true
+        FrameOptions:
+          FrameOption: DENY
+          Override: true
+        ReferrerPolicy:
+          ReferrerPolicy: strict-origin-when-cross-origin
+          Override: true
+        StrictTransportSecurity:
+          AccessControlMaxAgeSec: 31536000
+          IncludeSubdomains: true
+          Preload: true
+          Override: true
+        XSSProtection:
+          ModeBlock: true
+          Override: true
+          Protection: true
+      CustomHeadersConfig:
+        Items:
+          - Header: 'Cache-Control'
+            Value: 'public, max-age=2592000, immutable'
+            Override: false
+```
+
+---
+
+**ARCHITECTURAL ENHANCEMENT — Missing MediaConvert Integration**
+
+- The template claims to be "VOD academy streaming video assets" but there is zero AWS Elemental MediaConvert pipeline defined. Raw MP4 uploads to S3 are not production-ready for global multi-bitrate streaming. You need adaptive bitrate (ABR) encoding to HLS/DASH with multiple renditions (240p/480p/720p/1080p) so Smart TVs in countries with poor connectivity (parts of Poland, Brazil) auto-adapt:
+
+```yaml
+MediaConvertRole:
+  Type: 'AWS::IAM::Role'
+  Properties:
+    RoleName: !Sub 'FixyachipsMediaConvertRole-${AWS::StackName}'
+    AssumeRolePolicyDocument:
+      Version: '2012-10-17'
+      Statement:
+        - Effect: Allow
+          Principal:
+            Service: mediaconvert.amazonaws.com
+          Action: 'sts:AssumeRole'
+    Policies:
+      - PolicyName: MediaConvertS3Access
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - 's3:GetObject'
+                - 's3:PutObject'
+              Resource:
+                - !Sub 'arn:aws:s3:::${StreamingVideoBucket}/raw-uploads/*'
+                - !Sub 'arn:aws:s3:::${StreamingVideoBucket}/vod/*'
+                - !Sub 'arn:aws:s3:::${StreamingVideoBucket}/hls/*'
+                - !Sub 'arn:aws:s3:::${StreamingVideoBucket}/dash/*'
+
+VideoProcessingTrigger:
+  Type: 'AWS::Lambda::Function'
+  Properties:
+    FunctionName: !Sub 'FixyachipsVideoProcessor-${AWS::StackName}'
+    Handler: index.lambda_handler
+    Runtime: python3.12
+    Role: !GetAtt FixyachipsMasterRole.Arn
+    MemorySize: 512
+    Timeout: 60
+    Environment:
+      Variables:
+        MEDIACONVERT_ENDPOINT: ''    # Populate via custom resource or SSM
+        MEDIACONVERT_ROLE_ARN: !GetAtt MediaConvertRole.Arn
+        OUTPUT_BUCKET: !Ref StreamingVideoBucket
+    Code:
+      ZipFile: |
+        import json, boto3, os, re
+        def lambda_handler(event, context):
+            mc_client = boto3.client(
+                'mediaconvert',
+                endpoint_url=os.environ['MEDIACONVERT_ENDPOINT']
+            )
+            for record in event['Records']:
+                key = record['s3']['object']['key']
+                if not key.startswith('raw-uploads/'):
+                    return
+                base_name = re.sub(r'raw-uploads/(.+)\.[^.]+$', r'\1', key)
+                job_settings = {
+                    'Role': os.environ['MEDIACONVERT_ROLE_ARN'],
+                    'Settings': {
+                        'Inputs': [{'FileInput': f"s3://{record['s3']['bucket']['name']}/{key}"}],
+                        'OutputGroups': [
+                            {
+                                'Name': 'HLS Group',
+                                'OutputGroupSettings': {
+                                    'Type': 'HLS_GROUP_SETTINGS',
+                                    'HlsGroupSettings': {
+                                        'Destination': f"s3://{os.environ['OUTPUT_BUCKET']}/hls/{base_name}/",
+                                        'SegmentLength': 6,
+                                        'MinSegmentLength': 0
+                                    }
+                                },
+                                'Outputs': [
+                                    {'NameModifier': '_1080p', 'VideoDescription': {'Width': 1920, 'Height': 1080, 'CodecSettings': {'Codec': 'H_264', 'H264Settings': {'Bitrate': 5000000}}}},
+                                    {'NameModifier': '_720p',  'VideoDescription': {'Width': 1280, 'Height': 720,  'CodecSettings': {'Codec': 'H_264', 'H264Settings': {'Bitrate': 2500000}}}},
+                                    {'NameModifier': '_480p',  'VideoDescription': {'Width': 854,  'Height': 480,  'CodecSettings': {'Codec': 'H_264', 'H264Settings': {'Bitrate': 1000000}}}},
+                                    {'NameModifier': '_240p',  'VideoDescription': {'Width': 426,  'Height': 240,  'CodecSettings': {'Codec': 'H_264', 'H264Settings': {'Bitrate': 400000}}}}
+                                ]
+                            }
+                        ]
+                    }
+                }
+                mc_client.create_job(**job_settings)
+                print(f"MediaConvert job submitted for: {key}")
+
+S3VideoUploadNotification:
+  Type: 'AWS::S3::BucketNotification'
+  # Note: BucketNotification cannot be a separate resource - must be inline in bucket
+  # Use EventBridge instead:
+
+VideoUploadEventRule:
+  Type: 'AWS::Events::Rule'
+  Properties:
+    Name: !Sub 'FixyachipsVideoUpload-${AWS::StackName}'
+    EventPattern:
+      source: ['aws.s3']
+      detail-type: ['Object Created']
+      detail:
+        bucket:
+          name: [!Ref StreamingVideoBucket]
+        object:
+          key:
+            - prefix: 'raw-uploads/'
+    Targets:
+      - Id: VideoProcessingLambda
+        Arn: !GetAtt VideoProcessingTrigger.Arn
+```
+
+---
+
+**ARCHITECTURAL ENHANCEMENT — No CloudFront Error Pages for VOD Fallback**
+
+- No `CustomErrorResponses` defined. If a student's player requests a VOD segment that doesn't exist (e.g., wrong URL, encoding in progress), CloudFront returns a raw S3 403/404 XML response. Smart TVs and video players cannot parse XML error pages — they freeze or crash. Add graceful error handling:
+
+```yaml
+    # Inside DistributionConfig:
+      CustomErrorResponses:
+        - ErrorCode: 403
+          ResponseCode: 200
+          ResponsePagePath: '/index.html'
+          ErrorCachingMinTTL: 10
+        - ErrorCode: 404
+          ResponseCode: 200
+          ResponsePagePath: '/index.html'
+          ErrorCachingMinTTL: 10
+        - ErrorCode: 500
+          ResponseCode: 503
+          ResponsePagePath: '/error.html'
+          ErrorCachingMinTTL: 5
+        - ErrorCode: 503
+          ResponseCode: 503
+          ResponsePagePath: '/error.html'
+          ErrorCachingMinTTL: 5
+```
+
+---
+
+## VECTOR 4: MULTI-LINGUAL ARCHITECTURE (8 CORE LANGUAGES)
+
+---
+
+**CRITICAL ERROR — No Language Routing Architecture Exists**
+
+- The template has no language routing mechanism whatsoever. The `WebsiteRouterFunction` only handles `.html` suffix rewriting. For 8 languages across 120 countries, there is no cache segmentation, no `Accept-Language` forwarding, and no path-based routing. This is a complete architectural gap. The corrected CloudFront Function below handles clean path routing AND adds language prefix normalization:
+
+```yaml
+WebsiteRouterFunction:
+  Type: 'AWS::CloudFront::Function'
+  Properties:
+    Name: !Sub 'FixRouter-${AWS::StackName}'
+    AutoPublish: true
+    FunctionConfig:
+      Comment: 'Clean URLs + Language path normalization for 8-language VOD academy'
+      Runtime: 'cloudfront-js-2.0'
+    FunctionCode: |
+      const SUPPORTED_LANGUAGES = ['en', 'es', 'pt', 'fr', 'it', 'de', 'pl', 'sv'];
+      const DEFAULT_LANGUAGE = 'en';
+
+      async function handler(event) {
+        const request = event.request;
+        let uri = request.uri;
+        
+        // Extract first path segment to check for language prefix
+        const segments = uri.split('/').filter(s => s.length > 0);
+        const firstSegment = segments[0] ? segments[0].toLowerCase() : '';
+        
+        // If no language prefix, do NOT redirect (kills cache hit ratio)
+        // Just serve from /en/ prefix transparently at the S3 level
+        if (!SUPPORTED_LANGUAGES.includes(firstSegment)) {
+          // Prepend default language for S3 key resolution
+          uri = '/' + DEFAULT_LANGUAGE + uri;
+        }
+        
+        // Clean URL: append index.html for directory paths
+        if (uri.endsWith('/')) {
+          uri += 'index.html';
+        } else if (!uri.includes('.') || uri.split('/').pop().indexOf('.') === -1) {
+          uri += '.html';
+        }
+        
+        request.uri = uri;
+        return request;
+      }
+```
+
+---
+
+**CRITICAL ERROR — Accept-Language Header Forwarding Will Destroy Cache Hit Ratio**
+
+- **Do NOT forward `Accept-Language` headers in the Origin Request Policy for VOD content.** This is the most common mistake in multi-lingual CloudFront architectures. If Accept-Language is included in the cache key, every unique language header variant creates a separate cache entry. A German user on Chrome sends `de-DE,de;q=0.9,en;q=0.8` while a German user on Firefox sends `de,en-US;q=0.7` — these are two different cache keys for the same German `/de/index.html` page, obliterating your cache hit ratio.
+
+- **The correct architecture is path-based routing only**: `/es/*`, `/de/*`, `/fr/*` etc. Content is stored in S3 under language-prefixed paths. CloudFront caches by path. No header forwarding needed. The corrected function above implements this.
+
+---
+
+**ARCHITECTURAL ENHANCEMENT — No Language-Aware S3 Bucket Structure Defined**
+
+- The S3 bucket has no enforced folder structure for multi-lingual content. Define your S3 key namespace in documentation and enforce it via IAM path conditions:
+
+```yaml
+# Recommended S3 key structure (enforce via CI/CD upload scripts):
+# /en/index.html          -> English homepage
+# /es/index.html          -> Spanish homepage
+# /de/index.html          -> German homepage
+# /fr/index.html          -> French homepage
+# /it/index.html          -> Italian homepage
+# /pt/index.html          -> Portuguese homepage
+# /pl/index.html          -> Polish homepage
+# /sv/index.html          -> Swedish homepage
+# /hls/{lang}/{course-id}/master.m3u8  -> HLS master playlist per language
+# /dash/{lang}/{course-id}/manifest.mpd -> DASH manifest per language
+# /vod/{lang}/{course-id}/1080p.mp4    -> Direct MP4 per language
+# /raw-uploads/{course-id}.mp4         -> Input for MediaConvert
+```
+
+---
+
+**ARCHITECTURAL ENHANCEMENT — No Language Sitemap or hreflang Output**
+
+- Missing `CloudFormation Output` for language-specific URLs. Add outputs that your frontend team and SEO tooling can consume:
+
+```yaml
+  LanguageURLsEN:
+    Description: 'English content base URL'
+    Value: !Sub 'https://${DomainName}/en/'
+  LanguageURLsES:
+    Description: 'Spanish content base URL'
+    Value: !Sub 'https://${DomainName}/es/'
+  LanguageURLsDE:
+    Description: 'German content base URL'
+    Value: !Sub 'https://${DomainName}/de/'
+  LanguageURLsFR:
+    Description: 'French content base URL'
+    Value: !Sub 'https://${DomainName}/fr/'
+  LanguageURLsPT:
+    Description: 'Portuguese content base URL'
+    Value: !Sub 'https://${DomainName}/pt/'
+  LanguageURLsIT:
+    Description: 'Italian content base URL'
+    Value: !Sub 'https://${DomainName}/it/'
+  LanguageURLsPL:
+    Description: 'Polish content base URL'
+    Value: !Sub 'https://${DomainName}/pl/'
+  LanguageURLsSV:
+    Description: 'Swedish content base URL'
+    Value: !Sub 'https://${DomainName}/sv/'
+```
+
+---
+
+## VECTOR 5: SECURITY BLINDSPOTS
+
+---
+
+**CRITICAL ERROR — IAM Role Grants bedrock:\*, transcribe:\*, translate:\*, polly:\* with Resource: \***
+
+- This is the most dangerous line in the entire template. `'bedrock:*'` on `Resource: '*'` means the `SignupWorker` Lambda (which is internet-exposed via API Gateway) can invoke any Bedrock model, including the most expensive ones like Claude 3 Opus at $15/million tokens. A single malicious request that triggers unexpected code execution could invoke Bedrock in a loop and generate thousands of dollars in charges before you notice. Scope these to specific actions only:
+
+```yaml
+        # AI/ML: scoped to minimum required actions
+        - Effect: Allow
+          Action:
+            - 'ses:SendEmail'
+            - 'ses:SendRawEmail'
+          Resource:
+            - !Sub 'arn:aws:ses:${AWS::Region}:${AWS::AccountId}:identity/${AdminEmail}'
+            - !Sub 'arn:aws:ses:${AWS::Region}:${AWS::AccountId}:identity/fixyachips.com'
+        # Bedrock: scope to specific models only - NEVER bedrock:*
+        - Effect: Allow
+          Action:
+            - 'bedrock:InvokeModel'
+          Resource:
+            - !Sub 'arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.titan-text-express-v1'
+            # Add specific model ARNs as needed - never wildcard
+        # Translate: scope to translate only
+        - Effect: Allow
+          Action:
+            - 'translate:TranslateText'
+            - 'translate:GetTerminology'
+          Resource: '*'   # Translate has no resource-level permissions - AWS limitation
+        # Polly: scope to synthesis only
+        - Effect: Allow
+          Action:
+            - 'polly:SynthesizeSpeech'
+          Resource: '*'   # Polly has no resource-level permissions - AWS limitation
+        # Transcribe: scope to job management only
+        - Effect: Allow
+          Action:
+            - 'transcribe:StartTranscriptionJob'
+            - 'transcribe:GetTranscriptionJob'
+          Resource: '*'   # Transcribe has no resource-level permissions - AWS limitation
+```
+
+---
+
+**CRITICAL ERROR — API Gateway POST /signup Has No Authentication and No Rate Limiting**
+
+- `AuthorizationType: NONE` on the POST method means any bot on the internet can spam your signup endpoint at full throttle, fill your DynamoDB table with garbage, and exhaust your SES sending quota (getting your domain blacklisted). There is no `UsagePlan`, no `ApiKey`, and no stage-level throttling:
+
+```yaml
+# Add API Gateway Stage with throttling
+ApiStage:
+  Type: 'AWS::ApiGateway::Stage'
+  Properties:
+    RestApiId: !Ref SignupAPI
+    StageName: prod
+    MethodSettings:
+      - ResourcePath: '/signup'
+        HttpMethod: POST
+        ThrottlingRateLimit: 10      # 10 requests per second
+        ThrottlingBurstLimit: 50     # 50 burst capacity
+      - ResourcePath: '/*'
+        HttpMethod: '*'
+        ThrottlingRateLimit: 20
+        ThrottlingBurstLimit: 100
+    AccessLogSetting:
+      DestinationArn: !GetAtt ApiLogGroup.Arn
+      Format: '{"requestId":"$context.requestId","ip":"$context.identity.sourceIp","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","routeKey":"$context.routeKey","status":"$context.status","responseLength":"$context.responseLength"}'
+
+ApiLogGroup:
+  Type: 'AWS::Logs::LogGroup'
+  Properties:
+    LogGroupName: !Sub '/aws/apigateway/FixyachipsAPI-${AWS::StackName}'
+    RetentionInDays: 30
+
+# Update ApiDeployment to NOT include StageName (use ApiStage instead)
+ApiDeployment:
+  Type: 'AWS::ApiGateway::Deployment'
+  DependsOn:
+    - ApiMethod
+    - ApiOptionsMethod
+  Properties:
+    RestApiId: !Ref SignupAPI
+    # Remove StageName from here - managed by ApiStage resource
+```
+
+---
+
+**CRITICAL ERROR — WAF Missing Rate-Based Rule**
+
+- `WebBodyguard` has `CommonRuleSet` and `BotControlRuleSet` but **no rate-based rule**. A distributed botnet hitting from 10,000 IPs at 1 request/second each will bypass BotControl (which targets known bots) and flood your origin. Add a rate-based rule to catch volumetric attacks:
+
+```yaml
+        - Name: RateLimitSignupEndpoint
+          Priority: 2
+          Statement:
+            RateBasedStatement:
+              Limit: 1000          # Max 1000 requests per 5 minutes per IP
+              AggregateKeyType: IP
+              ScopeDownStatement:
+                ByteMatchStatement:
+                  SearchString: '/signup'
+                  FieldToMatch:
+                    UriPath: {}
+                  TextTransformations:
+                    - Priority: 0
+                      Type: LOWERCASE
+                  PositionalConstraint: CONTAINS
+          Action:
+            Block: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: RateLimitSignup
+
+        - Name: BlockHighRiskCountries
+          Priority: 3
+          Statement:
+            GeoMatchStatement:
+              CountryCodes:
+                - 'KP'    # North Korea
+                - 'IR'    # Iran
+                - 'CU'    # Cuba (OFAC)
+                - 'SY'    # Syria (OFAC)
+          Action:
+            Block: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: GeoBlock
+```
+
+---
+
+**CRITICAL ERROR — Cognito UserPool Missing MFA Configuration**
+
+- `FixyachipsUserPool` has no MFA settings. For a paid VOD academy with paywall-ready architecture, account takeover via credential stuffing is the #1 identity threat. Without MFA, a compromised password = full account access to paid content:
+
+```yaml
+FixyachipsUserPool:
+  Type: 'AWS::Cognito::UserPool'
+  Properties:
+    UserPoolName: !Sub 'Fixyachips_Global_Users-${AWS::StackName}'
+    UsernameAttributes: [email]
+    AutoVerifiedAttributes: [email]
+    MfaConfiguration: OPTIONAL     # Don't force MFA at launch - kills conversion
+    EnabledMfas:
+      - TOTP                       # Google Authenticator / Authy
+    AccountRecoverySetting:
+      RecoveryMechanisms:
+        - Name: verified_email
+          Priority: 1
+    AdminCreateUserConfig:
+      AllowAdminCreateUserOnly: false
+      InviteMessageTemplate:
+        EmailMessage: 'Welcome to Fixyachips Academy. Your temporary password is {####}'
+        EmailSubject: 'Your Fixyachips Academy Access'
+    UserPoolAddOns:
+      AdvancedSecurityMode: ENFORCED   # Blocks compromised credentials
+    Policies:
+      PasswordPolicy:
+        MinimumLength: 8
+        RequireLowercase: true
+        RequireNumbers: true
+        RequireSymbols: true
+        RequireUppercase: true
+        TemporaryPasswordValidityDays: 7
+```
+
+---
+
+**CRITICAL ERROR — Cognito Client Allows ALLOW_USER_PASSWORD_AUTH**
+
+- `ALLOW_USER_PASSWORD_AUTH` sends the plaintext password to Cognito. This auth flow is vulnerable to MITM if TLS is ever misconfigured and is the weakest auth flow available. For a public-facing SPA, use `ALLOW_USER_SRP_AUTH` exclusively (Secure Remote Password — password never leaves the client in plaintext):
+
+```yaml
+FixyachipsUserPoolClient:
+  Type: 'AWS::Cognito::UserPoolClient'
+  Properties:
+    ClientName: Fixyachips_Web_Portal
+    UserPoolId: !Ref FixyachipsUserPool
+    GenerateSecret: false
+    ExplicitAuthFlows:
+      - ALLOW_USER_SRP_AUTH          # KEEP: secure password auth
+      - ALLOW_REFRESH_TOKEN_AUTH     # KEEP: token refresh
+      # REMOVED: ALLOW_USER_PASSWORD_AUTH - plaintext password risk
+    PreventUserExistenceErrors: ENABLED   # Don't leak whether email exists
+    RefreshTokenValidity: 30
+    AccessTokenValidity: 1
+    IdTokenValidity: 1
+    TokenValidityUnits:
+      RefreshToken: days
+      AccessToken: hours
+      IdToken: hours
+    EnableTokenRevocation: true
+```
+
+---
+
+**ARCHITECTURAL ENHANCEMENT — Missing CloudFront Geographic Restriction for Regional Licensing**
+
+- The template has zero `Restrictions` block. If fixyachips.com ever acquires regional licensing restrictions (common in VOD/education platforms), you have no mechanism to enforce them. Add the structure now even with an empty allowlist so it's ready to activate:
+
+```yaml
+    # Inside DistributionConfig:
+      Restrictions:
+        GeoRestriction:
+          RestrictionType: none    # Change to 'blacklist' or 'whitelist' when licensing requires
+          # Locations: []          # Uncomment and populate when needed
+          # Example blacklist: ['KP', 'IR', 'CU', 'SY']
+```
+
+---
+
+**ARCHITECTURAL ENHANCEMENT — Missing S3 Bucket Versioning and Replication for VOD Assets**
+
+- If a video file is accidentally overwritten or deleted in S3, there is no recovery path. Enable versioning and consider cross-region replication for disaster recovery of master video assets:
+
+```yaml
+StreamingVideoBucket:
+  # Add to Properties:
+    VersioningConfiguration:
+      Status: Enabled
+```
+
+---
+
+**ARCHITECTURAL ENHANCEMENT — Missing CloudWatch Alarms for Security Events**
+
+- Zero operational alarms defined anywhere in the template. For a global platform you need at minimum:
+
+```yaml
+WAFBlockedRequestsAlarm:
+  Type: 'AWS::CloudWatch::Alarm'
+  Properties:
+    AlarmName: !Sub 'FixyachipsWAFBlocks-${AWS::StackName}'
+    AlarmDescription: 'WAF blocking abnormal volume of requests - potential attack'
+    MetricName: BlockedRequests
+    Namespace: AWS/WAFV2
+    Dimensions:
+      - Name: WebACL
+        Value: !Sub 'FixyachipsShield-${AWS::StackName}'
+      - Name: Region
+        Value: 'us-east-1'
+      - Name: Rule
+        Value: ALL
+    Statistic: Sum
+    Period: 300
+    EvaluationPeriods: 1
+    Threshold: 1000
+    ComparisonOperator: GreaterThanThreshold
+    AlarmActions:
+      - !Ref SecurityAlertTopic
+
+SignupAnomalyAlarm:
+  Type: 'AWS::CloudWatch::Alarm'
+  Properties:
+    AlarmName: !Sub 'FixyachipsSignupAnomaly-${AWS::StackName}'
+    AlarmDescription: 'Unusual signup volume - possible bot or viral event'
+    MetricName: Invocations
+    Namespace: AWS/Lambda
+    Dimensions:
+      - Name: FunctionName
+        Value: !Ref SignupWorker
+    Statistic: Sum
+    Period: 300
+    EvaluationPeriods: 1
+    Threshold: 500
+    ComparisonOperator: GreaterThanThreshold
+    AlarmActions:
+      - !Ref SecurityAlertTopic
+
+SecurityAlertTopic:
+  Type: 'AWS::SNS::Topic'
+  Properties:
+    TopicName: !Sub 'FixyachipsSecurityAlerts-${AWS::StackName}'
+    Subscription:
+      - Protocol: email
+        Endpoint: !Ref AdminEmail
+```
+
+---
+
+## COMPLETE CORRECTED DISTRIBUTION BLOCK (PRODUCTION-READY)
+
+The following is the fully corrected `WebsiteDistribution` resource incorporating all fixes from Vectors 1–5:
+
+```yaml
+WebsiteDistribution:
+  Type: 'AWS::CloudFront::Distribution'
+  DependsOn:
+    - EmpireOAC
+    - WebBodyguard
+    - VODCachePolicy
+    - WebCachePolicy
+    - VODOriginRequestPolicy
+    - VODResponseHeadersPolicy
+  Properties:
+    DistributionConfig:
+      Enabled: true
+      PriceClass: PriceClass_All
+      DefaultRootObject: index.html
+      Aliases:
+        - !Ref DomainName
+        - !Ref WWWDomainName
+      ViewerCertificate:
+        AcmCertificateArn: !Ref CertificateArn
+        SslSupportMethod: sni-only
+        MinimumProtocolVersion: TLSv1.2_2021
+      WebACLId: !GetAtt WebBodyguard.Arn
+      HttpVersion: http2and3          # Enable HTTP/3 for modern TV clients
+      IPV6Enabled: true
+      Logging:
+        Bucket: !GetAtt CloudFrontLogsBucket.DomainName
+        Prefix: 'cloudfront-logs/'
+        IncludeCookies: false
+      Origins:
+        - Id: S3Origin
+          DomainName: !GetAtt StreamingVideoBucket.RegionalDomainName
+          S3OriginConfig:
+            OriginAccessIdentity: ""
+          OriginAccessControlId: !GetAtt EmpireOAC.Id
+          OriginShield:
+            Enabled: true
+            OriginShieldRegion: !Ref OriginShieldRegion
+      DefaultCacheBehavior:
+        TargetOriginId: S3Origin
+        ViewerProtocolPolicy: redirect-to-https
+        Compress: true
+        CachePolicyId: !Ref WebCachePolicy
+        ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+        AllowedMethods: [GET, HEAD, OPTIONS]
+        CachedMethods: [GET, HEAD, OPTIONS]
+        FunctionAssociations:
+          - EventType: viewer-request
+            FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+      CacheBehaviors:
+        - PathPattern: '/hls/*'
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: false
+          CachePolicyId: !Ref VODCachePolicy
+          OriginRequestPolicyId: !Ref VODOriginRequestPolicy
+          ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD]
+        - PathPattern: '/dash/*'
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: false
+          CachePolicyId: !Ref VODCachePolicy
+          OriginRequestPolicyId: !Ref VODOriginRequestPolicy
+          ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD]
+        - PathPattern: '/vod/*'
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: false
+          CachePolicyId: !Ref VODCachePolicy
+          OriginRequestPolicyId: !Ref VODOriginRequestPolicy
+          ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD]
+        - PathPattern: '/es/*'
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          CachePolicyId: !Ref WebCachePolicy
+          ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+          AllowedMethods: [GET, HEAD]
+          CachedMethods: [GET, HEAD]
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+        - PathPattern: '/pt/*'
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          CachePolicyId: !Ref WebCachePolicy
+          ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+          AllowedMethods: [GET, HEAD]
+          CachedMethods: [GET, HEAD]
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+        - PathPattern: '/fr/*'
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          CachePolicyId: !Ref WebCachePolicy
+          ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+          AllowedMethods: [GET, HEAD]
+          CachedMethods: [GET, HEAD]
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+        - PathPattern: '/it/*'
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          CachePolicyId: !Ref WebCachePolicy
+          ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+          AllowedMethods: [GET, HEAD]
+          CachedMethods: [GET, HEAD]
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+        - PathPattern: '/de/*'
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          CachePolicyId: !Ref WebCachePolicy
+          ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+          AllowedMethods: [GET, HEAD]
+          CachedMethods: [GET, HEAD]
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+        - PathPattern: '/pl/*'
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          CachePolicyId: !Ref WebCachePolicy
+          ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+          AllowedMethods: [GET, HEAD]
+          CachedMethods: [GET, HEAD]
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+        - PathPattern: '/sv/*'
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          CachePolicyId: !Ref WebCachePolicy
+          ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+          AllowedMethods: [GET, HEAD]
+          CachedMethods: [GET, HEAD]
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+      CustomErrorResponses:
+        - ErrorCode: 403
+          ResponseCode: 200
+          ResponsePagePath: '/index.html'
+          ErrorCachingMinTTL: 10
+        - ErrorCode: 404
+          ResponseCode: 200
+          ResponsePagePath: '/index.html'
+          ErrorCachingMinTTL: 10
+        - ErrorCode: 500
+          ResponseCode: 503
+          ResponsePagePath: '/en/error.html'
+          ErrorCachingMinTTL: 5
+      Restrictions:
+        GeoRestriction:
+          RestrictionType: none
+```
+
+---
+
+## SEVERITY SUMMARY TABLE
+
+| Finding | Severity | Vector |
+|---|---|---|
+| `bedrock:*` wildcard on internet-exposed Lambda role | CRITICAL ERROR | 5 |
+| No ACM certificate / custom domain on CloudFront | CRITICAL ERROR | 2 |
+| ForwardedValues blocks cache policy adoption | CRITICAL ERROR | 2 |
+| No Range request headers — video scrubbing broken on TVs | CRITICAL ERROR | 3 |
+| OPTIONS method using Lambda proxy instead of MOCK | CRITICAL ERROR | 2 |
+| No DLQ on SignupWorker — leads lost on surge | CRITICAL ERROR | 2 |
+| No rate limiting on /signup API Gateway method | CRITICAL ERROR | 5 |
+| ALLOW_USER_PASSWORD_AUTH on Cognito client | CRITICAL ERROR | 5 |
+| No language routing architecture (8 languages, zero config) | CRITICAL ERROR | 4 |
+| No VOD CacheBehaviors — video served with HTML TTLs | CRITICAL ERROR | 3 |
+| CloudFront Function on deprecated JS 1.0 runtime | CRITICAL ERROR | 2 |
+| No WAF rate-based rule — volumetric attacks bypass WAF | CRITICAL ERROR | 5 |
+| S3 Lifecycle/Intelligent-Tiering absent on VOD assets | FINOPS SAVINGS | 1 |
+| Lambda memory unset — 128MB cold start bleed | FINOPS SAVINGS | 1 |
+| Lambda timeout 30s — 2x correct value, billing waste | FINOPS SAVINGS | 1 |
+| Origin Shield hardcoded us-east-1 for European audience | FINOPS SAVINGS | 1 |
+| Missing TTL config — CloudFront falls back to origin headers | FINOPS SAVINGS | 1 |
+| S3 CORS allows POST/PUT on read-only CDN bucket | FINOPS SAVINGS | 1 |
+| No MediaConvert pipeline — raw MP4 not ABR-encoded | ARCHITECTURAL | 3 |
+| No CloudFront access logging | ARCHITECTURAL | 2 |
+| DynamoDB missing PITR and Email GSI | ARCHITECTURAL | 2 |
+| Cognito missing MFA and AdvancedSecurity | ARCHITECTURAL | 5 |
+| No CloudWatch alarms for WAF/Lambda anomalies | ARCHITECTURAL | 5 |
+| No S3 bucket versioning for VOD master assets | ARCHITECTURAL | 5 |
+| No geo-restriction structure for licensing readiness | ARCHITECTURAL | 5 |
+| HTTP/3 not enabled on CloudFront (Smart TV benefit) | ARCHITECTURAL | 3 |
+| Duplicate email check missing in Lambda | ARCHITECTURAL | 2 |
+User: is that the entire yaml file? 
+Model: **No — that is NOT the entire YAML file.** The PDF you uploaded was **cut off**. Here is exactly what was captured vs. what is missing:
+
+---
+
+## What Was Successfully Captured (17 Resources)
+
+The PDF contained the complete definitions for all 17 resources listed in the file header:
+
+1. `EmpireOAC` ✅
+2. `WebBodyguard` ✅
+3. `WebsiteRouterFunction` ✅
+4. `StreamingVideoBucket` ✅
+5. `BucketPolicy` ✅
+6. `WebsiteDistribution` ✅
+7. `StudentTable` ✅
+8. `FixyachipsMasterRole` ✅
+9. `SignupWorker` ✅ (Lambda + inline Python code)
+10. `SignupWorkerLogGroup` ✅
+11. `SignupAPI` ✅
+12. `ApiResource` ✅
+13. `ApiMethod` ✅
+14. `ApiDeployment` ✅
+15. `LambdaPermission` ✅
+16. `FixyachipsUserPool` ✅
+17. `FixyachipsUserPoolClient` ✅
+18. `Outputs` block ✅
+
+---
+
+## What Concerns Me About Completeness
+
+The description says **"v4.0 COMPLETE STACK — OAC, Origin Shield, WAF, AI Suite, Signup API, Paywall-Ready"** — but based on what was audited, the following **described capabilities have zero corresponding resources** in the file:
+
+| Claimed Feature | Resources Present | Verdict |
+|---|---|---|
+| AI Suite | Only IAM permissions for Bedrock/Translate/Polly | **No AI Lambda functions defined** |
+| Paywall-Ready | Only Cognito UserPool exists | **No payment/entitlement resources** |
+| VOD Streaming | Only S3 bucket exists | **No MediaConvert, no HLS pipeline** |
+| Media Pipeline | Nothing | **Completely absent** |
+
+---
+
+## My Recommendation
+
+**Please paste the raw YAML text directly into the chat** rather than uploading as PDF. PDFs truncate code blocks, collapse indentation, and wrap long lines — all of which are critical to accurate CloudFormation auditing.
+
+If you paste the raw YAML I can:
+- Confirm whether the AI Suite functions exist but were cut from the PDF
+- Audit the paywall/entitlement architecture
+- Check if there are additional Lambda functions, Step Functions, EventBridge rules, or MediaConvert jobs that were not visible in the upload
+- Give you a fully complete audit with zero blind spots from document truncation
+
+**The audit I delivered is valid for what was visible — but you may have additional resources in the actual file that were never reviewed.**
+User: lets start over   here is a cAWSTemplateFormatVersion: '2010-09-09'
+Description: 'Fixyachips Global v4.0: COMPLETE STACK - OAC, Origin Shield, WAF, AI Suite, Signup API, Paywall-Ready'
+
+# ============================================================
+# WHAT'S IN THIS FILE (v4.0 COMPLETE)
+# ============================================================
+# 1.  EmpireOAC            - Origin Access Control (S3 lock)
+# 2.  WebBodyguard         - WAF firewall (restored from v3.4)
+# 3.  WebsiteRouterFunction - CloudFront edge URL router
+# 4.  StreamingVideoBucket  - Secured S3 bucket (CORS locked)
+# 5.  BucketPolicy         - Correct ARN handshake (FIXED)
+# 6.  WebsiteDistribution  - CloudFront + Origin Shield + WAF
+# 7.  StudentTable         - DynamoDB (DeletionPolicy: Retain)
+# 8.  FixyachipsMasterRole - Scoped IAM (FIXED - not wildcard)
+# 9.  SignupWorker         - Lambda pre-signup + SES email
+# 10. SignupWorkerLogGroup  - CloudWatch logs for Lambda
+# 11. SignupAPI            - API Gateway REST API
+# 12. ApiResource          - /signup route
+# 13. ApiMethod            - POST handler
+# 14. ApiDeployment        - Deploys API to 'prod' stage
+# 15. LambdaPermission     - Lets API Gateway invoke Lambda
+# 16. FixyachipsUserPool   - Cognito user pool
+# 17. FixyachipsUserPoolClient - Cognito web client
+# ============================================================
+
+Parameters:
+  AdminEmail:
+    Type: String
+    Default: 'info@fixyachips.com'
+
+Resources:
+
+  # ============================================================
+  # 1. THE LOCK (Origin Access Control)
+  # Tells CloudFront to sign every S3 request with SigV4.
+  # This means your S3 bucket stays 100% private.
+  # ============================================================
+  EmpireOAC:
+    Type: 'AWS::CloudFront::OriginAccessControl'
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub 'Empire-OAC-${AWS::StackName}'
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # ============================================================
+  # 2. THE BODYGUARD (WAF - Web Application Firewall)
+  # Restored from v3.4. Protects against bots, SQL injection,
+  # XSS attacks, and common exploits at the CloudFront edge.
+  # Cost: ~$5/month base + $0.60 per million requests.
+  # MUST be in us-east-1 for CloudFront scope.
+  # ============================================================
+  WebBodyguard:
+    Type: 'AWS::WAFv2::WebACL'
+    Properties:
+      Name: !Sub 'FixyachipsShield-${AWS::StackName}'
+      Scope: CLOUDFRONT
+      DefaultAction: { Allow: {} }
+      VisibilityConfig:
+        SampledRequestsEnabled: true
+        CloudWatchMetricsEnabled: true
+        MetricName: FixyachipsWAF
+      Rules:
+        - Name: AWS-AWSManagedRulesCommonRuleSet
+          Priority: 0
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesCommonRuleSet
+          OverrideAction: { None: {} }
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: CommonRules
+        - Name: AWS-AWSManagedRulesBotControlRuleSet
+          Priority: 1
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesBotControlRuleSet
+              ManagedRuleGroupConfigs:
+                - AWSManagedRulesBotControlRuleSet:
+                    InspectionLevel: COMMON
+          OverrideAction: { None: {} }
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: BotControl
+
+  # ============================================================
+  # 3. THE EDGE ROUTER (CloudFront Function)
+  # Handles clean URLs - turns /about into /about.html
+  # Runs at the edge in every CloudFront location worldwide.
+  # ============================================================
+  WebsiteRouterFunction:
+    Type: 'AWS::CloudFront::Function'
+    Properties:
+      Name: !Sub 'FixRouter-${AWS::StackName}'
+      AutoPublish: true
+      FunctionConfig:
+        Comment: 'Fixes .html paths for clean URLs'
+        Runtime: 'cloudfront-js-1.0'
+      FunctionCode: |
+        function handler(event) {
+          var request = event.request;
+          var uri = request.uri;
+          if (uri.endsWith('/')) { request.uri += 'index.html'; }
+          else if (!uri.includes('.')) { request.uri += '.html'; }
+          return request;
+        }
+
+  # ============================================================
+  # 4. THE STORAGE (S3 Bucket)
+  # Fully private - no public access whatsoever.
+  # CORS locked to fixyachips.com only (FIXED from v3.9).
+  # ============================================================
+  StreamingVideoBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Sub 'fixyachips-platform-${AWS::AccountId}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ['*']
+            AllowedMethods: [GET, POST, PUT]
+            AllowedOrigins:
+              - 'https://fixyachips.com'
+              - 'https://www.fixyachips.com'
+
+  # ============================================================
+  # 5. THE HANDSHAKE (Bucket Policy)
+  # Only allows CloudFront (via OAC) to read from S3.
+  # ARN fixed from v3.9 (was 'arn:aws:partition' - not real).
+  # ============================================================
+  BucketPolicy:
+    Type: 'AWS::S3::BucketPolicy'
+    Properties:
+      Bucket: !Ref StreamingVideoBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: 's3:GetObject'
+            Resource: !Sub 'arn:aws:s3:::${StreamingVideoBucket}/*'
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${WebsiteDistribution}'
+
+  # ============================================================
+  # 6. THE GLOBAL WEBSITE (CloudFront Distribution)
+  # PriceClass_All = all 400+ edge locations worldwide.
+  # Origin Shield = extra caching layer, saves S3 costs.
+  # WAF wired in via WebAclId.
+  # ============================================================
+  WebsiteDistribution:
+    Type: 'AWS::CloudFront::Distribution'
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        PriceClass: PriceClass_All
+        DefaultRootObject: index.html
+        # WAF connected to CloudFront distribution
+        WebACLId: !GetAtt WebBodyguard.Arn
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt StreamingVideoBucket.RegionalDomainName
+            # S3OriginConfig required as placeholder even when using OAC
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+            OriginAccessControlId: !GetAtt EmpireOAC.Id
+            # Origin Shield: extra caching layer between CloudFront and S3
+            OriginShield:
+              Enabled: true
+              OriginShieldRegion: us-east-1
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          ForwardedValues:
+            QueryString: false
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+
+  # ============================================================
+  # 7. THE DATABASE (DynamoDB)
+  # Stores every student record.
+  # DeletionPolicy: Retain = data survives even if stack deleted.
+  # PAY_PER_REQUEST = $0 cost until you have real students.
+  # ============================================================
+  StudentTable:
+    Type: 'AWS::DynamoDB::Table'
+    DeletionPolicy: Retain
+    Properties:
+      TableName: !Sub 'FixyachipsStudents-${AWS::StackName}'
+      AttributeDefinitions:
+        - AttributeName: StudentID
+          AttributeType: S
+      KeySchema:
+        - AttributeName: StudentID
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+
+  # ============================================================
+  # 8. THE BRAINS (IAM Role)
+  # Used by all Lambda functions.
+  # FIXED: Scoped to specific resources only (not wildcard *).
+  # ============================================================
+  FixyachipsMasterRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: [lambda.amazonaws.com] }
+            Action: ['sts:AssumeRole']
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: FixyachipsAIPowerhouse
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # S3: scoped to your bucket only
+              - Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                  - 's3:PutObject'
+                  - 's3:DeleteObject'
+                  - 's3:ListBucket'
+                Resource:
+                  - !Sub 'arn:aws:s3:::${StreamingVideoBucket}'
+                  - !Sub 'arn:aws:s3:::${StreamingVideoBucket}/*'
+              # DynamoDB: scoped to your student table only
+              - Effect: Allow
+                Action:
+                  - 'dynamodb:GetItem'
+                  - 'dynamodb:PutItem'
+                  - 'dynamodb:UpdateItem'
+                  - 'dynamodb:DeleteItem'
+                  - 'dynamodb:Query'
+                  - 'dynamodb:Scan'
+                Resource: !GetAtt StudentTable.Arn
+              # AI/ML: these services require * resource (AWS limitation)
+              - Effect: Allow
+                Action:
+                  - 'ses:SendEmail'
+                  - 'bedrock:*'
+                  - 'transcribe:*'
+                  - 'translate:*'
+                  - 'polly:*'
+                Resource: '*'
+
+  # ============================================================
+  # 9. THE SIGNUP WORKER (Lambda Function)
+  # Restored from v3.4. Handles pre-launch waitlist signups.
+  # Flow: Frontend form -> API Gateway -> This Lambda ->
+  #       DynamoDB (stores lead) + SES (sends welcome email)
+  # ============================================================
+  SignupWorker:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      FunctionName: !Sub 'FixyachipsSignupWorker-${AWS::StackName}'
+      Handler: index.lambda_handler
+      Runtime: python3.12
+      Role: !GetAtt FixyachipsMasterRole.Arn
+      Timeout: 30
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref StudentTable
+          ADMIN_EMAIL: !Ref AdminEmail
+      Code:
+        ZipFile: |
+          import json, boto3, uuid, os
+          dynamodb = boto3.resource('dynamodb')
+          ses = boto3.client('ses')
+          table = dynamodb.Table(os.environ['TABLE_NAME'])
+
+          def lambda_handler(event, context):
+              
+              if event.get('httpMethod') == 'OPTIONS':
+                  return {
+                      'statusCode': 200,
+                      'headers': {
+                          'Access-Control-Allow-Origin': 'https://fixyachips.com',
+                          'Access-Control-Allow-Headers': 'Content-Type',
+                          'Access-Control-Allow-Methods': 'POST, OPTIONS'
+                      },
+                      'body': ''
+                  }
+              try:
+                  body = json.loads(event['body'])
+                  email = body.get('email', '').strip().lower()
+                  name = body.get('name', '').strip()
+
+                  if not email or not name:
+                      return {
+                          'statusCode': 400,
+                          'headers': {'Access-Control-Allow-Origin': 'https://fixyachips.com'},
+                          'body': json.dumps({'error': 'Name and email are required'})
+                      }
+
+                  
+                  table.put_item(Item={
+                      'StudentID': str(uuid.uuid4()),
+                      'Name': name,
+                      'Email': email,
+                      'Status': 'WAITLIST',
+                      'Source': body.get('source', 'website'),
+                      'Industry': body.get('industry', 'unknown')
+                  })
+
+                  
+                  ses.send_email(
+                      Source=os.environ['ADMIN_EMAIL'],
+                      Destination={'ToAddresses': [email]},
+                      Message={
+                          'Subject': {'Data': 'Welcome to the No-Drill Revolution - Fixyachips Academy'},
+                          'Body': {'Text': {'Data': 'Hello ' + name + ',\n\nYou are now on the waitlist for Fixyachips Global Academy.\n\nYou are about to learn the same trade secret No-Drill windshield repair methodology passed down since 1972 - personally taught to Joshua Cane by the pioneers themselves.\n\nThis is not just a course. This is a business in a box.\n\nWe will notify you the moment enrollment opens.\n\nJoshua Cane\nFounder, Fixyachips Global Academy\nCustodian of the 1972 No-Drill Methodology'}}
+                      }
+                  )
+
+                  ses.send_email(
+                      Source=os.environ['ADMIN_EMAIL'],
+                      Destination={'ToAddresses': [os.environ['ADMIN_EMAIL']]},
+                      Message={
+                          'Subject': {'Data': f'New Waitlist Signup: {name}'},
+                          'Body': {'Text': {'Data': f'New signup:\nName: {name}\nEmail: {email}\nIndustry: {body.get("industry", "unknown")}'}}
+                      }
+                  )
+
+                  return {
+                      'statusCode': 200,
+                      'headers': {
+                          'Access-Control-Allow-Origin': 'https://fixyachips.com',
+                          'Content-Type': 'application/json'
+                      },
+                      'body': json.dumps({'status': 'success', 'message': 'Welcome to the revolution!'})
+                  }
+
+              except Exception as e:
+                  print(f"ERROR: {str(e)}")
+                  return {
+                      'statusCode': 500,
+                      'headers': {'Access-Control-Allow-Origin': 'https://fixyachips.com'},
+                      'body': json.dumps({'error': 'Signup failed. Please try again.'})
+                  }
+
+  # ============================================================
+  # 10. CLOUDWATCH LOGS (Lambda Log Group)
+  # Gives your Lambda a named log group with 30-day retention.
+  # Without this logs pile up forever and cost money.
+  # ============================================================
+  SignupWorkerLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/FixyachipsSignupWorker-${AWS::StackName}'
+      RetentionInDays: 30
+
+  # ============================================================
+  # 11. THE FRONT DOOR (API Gateway)
+  # Creates the REST API that your frontend form posts to.
+  # ============================================================
+  SignupAPI:
+    Type: 'AWS::ApiGateway::RestApi'
+    Properties:
+      Name: !Sub 'FixyachipsAPI-${AWS::StackName}'
+      Description: 'Fixyachips Signup and Course API'
+
+  # ============================================================
+  # 12. THE ROUTE (/signup resource)
+  # ============================================================
+  ApiResource:
+    Type: 'AWS::ApiGateway::Resource'
+    Properties:
+      ParentId: !GetAtt SignupAPI.RootResourceId
+      PathPart: 'signup'
+      RestApiId: !Ref SignupAPI
+
+  # ============================================================
+  # 13. THE METHOD (POST handler)
+  # ============================================================
+  ApiMethod:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: POST
+      ResourceId: !Ref ApiResource
+      RestApiId: !Ref SignupAPI
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${SignupWorker.Arn}/invocations'
+
+  # CORS OPTIONS method for browser preflight requests
+  ApiOptionsMethod:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: OPTIONS
+      ResourceId: !Ref ApiResource
+      RestApiId: !Ref SignupAPI
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${SignupWorker.Arn}/invocations'
+
+  # ============================================================
+  # 14. THE DEPLOYMENT (publishes API to 'prod' stage)
+  # ============================================================
+  ApiDeployment:
+    Type: 'AWS::ApiGateway::Deployment'
+    DependsOn:
+      - ApiMethod
+      - ApiOptionsMethod
+    Properties:
+      RestApiId: !Ref SignupAPI
+      StageName: prod
+
+  # ============================================================
+  # 15. LAMBDA PERMISSION
+  # Lets API Gateway invoke the SignupWorker Lambda.
+  # ============================================================
+  LambdaPermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref SignupWorker
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${SignupAPI}/*'
+
+  # ============================================================
+  # 16. COGNITO USER POOL
+  # Handles student login/signup with email verification.
+  # Custom attributes: veteran_status, industry_segment.
+  # Strong password policy from v3.4 restored.
+  # ============================================================
+  FixyachipsUserPool:
+    Type: 'AWS::Cognito::UserPool'
+    Properties:
+      UserPoolName: !Sub 'Fixyachips_Global_Users-${AWS::StackName}'
+      UsernameAttributes: [email]
+      AutoVerifiedAttributes: [email]
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+          RequireUppercase: true
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Mutable: true
+          Required: true
+        - Name: veteran_status
+          AttributeDataType: String
+          Mutable: true
+        - Name: industry_segment
+          AttributeDataType: String
+          Mutable: true
+
+  # ============================================================
+  # 17. COGNITO USER POOL CLIENT
+  # The web app client - no secret (public SPA client).
+  # ============================================================
+  FixyachipsUserPoolClient:
+    Type: 'AWS::Cognito::UserPoolClient'
+    Properties:
+      ClientName: Fixyachips_Web_Portal
+      UserPoolId: !Ref FixyachipsUserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+        - ALLOW_USER_SRP_AUTH
+
+# ============================================================
+# OUTPUTS - Values you'll need for your frontend code
+# ============================================================
+Outputs:
+  WebsiteURL:
+    Description: 'Your CloudFront website URL'
+    Value: !GetAtt WebsiteDistribution.DomainName
+
+  SignupApiUrl:
+    Description: 'POST endpoint for waitlist signups'
+    Value: !Sub 'https://${SignupAPI}.execute-api.${AWS::Region}.amazonaws.com/prod/signup'
+
+  S3Bucket:
+    Description: 'Your video/content storage bucket'
+    Value: !Ref StreamingVideoBucket
+
+  UserPoolId:
+    Description: 'Cognito User Pool ID - needed for frontend auth'
+    Value: !Ref FixyachipsUserPool
+
+  UserPoolClientId:
+    Description: 'Cognito Client ID - needed for frontend auth'
+    Value: !Ref FixyachipsUserPoolClient
+
+  WAFArn:
+    Description: 'WAF Web ACL ARN'
+    Value: !GetAtt WebBodyguard.Arn
+ut and paste of the entire template:   
+Model: Good. I have the **complete, untruncated YAML** now. Let me execute the full audit clean from scratch.
+
+---
+
+# FIXYACHIPS GLOBAL v4.0 — COMPLETE STACK AUDIT
+### Principal AWS Serverless Architect + FinOps Security Review
+
+---
+
+## VECTOR 1: COST OPTIMIZATION & FINOPS
+
+---
+
+- **FINOPS SAVINGS — S3: Zero Lifecycle Policy or Intelligent-Tiering Defined**
+
+No lifecycle rules exist on `StreamingVideoBucket`. Every MP4, HLS segment, and DASH fragment ever uploaded sits in S3 Standard forever at full price regardless of viewership. For a VOD academy with a growing content library across 120 countries, this compounds monthly.
+
+```yaml
+StreamingVideoBucket:
+  Type: 'AWS::S3::Bucket'
+  Properties:
+    BucketName: !Sub 'fixyachips-platform-${AWS::AccountId}'
+    PublicAccessBlockConfiguration:
+      BlockPublicAcls: true
+      BlockPublicPolicy: true
+      IgnorePublicAcls: true
+      RestrictPublicBuckets: true
+    VersioningConfiguration:
+      Status: Enabled
+    IntelligentTieringConfigurations:
+      - Id: VODIntelligentTiering
+        Status: Enabled
+        Tierings:
+          - AccessTier: ARCHIVE_ACCESS
+            Days: 90
+          - AccessTier: DEEP_ARCHIVE_ACCESS
+            Days: 180
+    LifecycleConfiguration:
+      Rules:
+        - Id: TransitionVODToIntelligentTiering
+          Status: Enabled
+          Prefix: 'vod/'
+          Transitions:
+            - TransitionInDays: 30
+              StorageClass: INTELLIGENT_TIERING
+        - Id: TransitionHLSSegments
+          Status: Enabled
+          Prefix: 'hls/'
+          Transitions:
+            - TransitionInDays: 30
+              StorageClass: INTELLIGENT_TIERING
+        - Id: TransitionDASHSegments
+          Status: Enabled
+          Prefix: 'dash/'
+          Transitions:
+            - TransitionInDays: 30
+              StorageClass: INTELLIGENT_TIERING
+        - Id: AbortIncompleteUploads
+          Status: Enabled
+          AbortIncompleteMultipartUpload:
+            DaysAfterInitiation: 7
+    CorsConfiguration:
+      CorsRules:
+        - AllowedHeaders: ['*']
+          AllowedMethods: [GET, HEAD]       # FIXED: removed POST/PUT - CDN is read-only
+          AllowedOrigins:
+            - 'https://fixyachips.com'
+            - 'https://www.fixyachips.com'
+          ExposeHeaders:
+            - 'Content-Length'
+            - 'Content-Range'
+            - 'ETag'
+            - 'Accept-Ranges'
+          MaxAge: 3600
+```
+
+---
+
+- **FINOPS SAVINGS — S3 CORS Allows POST and PUT on a CDN Read-Only Bucket**
+
+`AllowedMethods: [GET, POST, PUT]` on a bucket that CloudFront reads from is incorrect and a security/cost exposure. CloudFront never POSTs or PUTs to S3 on behalf of video viewers. Strip to `[GET, HEAD]` as shown above. HEAD is required for byte-range negotiation on video players.
+
+---
+
+- **FINOPS SAVINGS — Lambda MemorySize Not Set: Defaults to 128MB Cold Start Tax**
+
+`SignupWorker` has no `MemorySize`. AWS defaults to 128MB. A Python 3.12 function cold-starting with boto3, DynamoDB, and two SES calls at 128MB runs 800ms–1.4s. At 256MB the same function runs in ~300ms. Lambda bills on GB-seconds — 256MB at 300ms costs the same or less than 128MB at 800ms, and your students get a faster signup confirmation.
+
+```yaml
+SignupWorker:
+  Type: 'AWS::Lambda::Function'
+  Properties:
+    FunctionName: !Sub 'FixyachipsSignupWorker-${AWS::StackName}'
+    Handler: index.lambda_handler
+    Runtime: python3.12
+    Role: !GetAtt FixyachipsMasterRole.Arn
+    Timeout: 15                          # REDUCED from 30: SES+DynamoDB never needs 30s
+    MemorySize: 256                      # ADDED: eliminates cold-start penalty
+    ReservedConcurrentExecutions: 100    # ADDED: hard cap prevents runaway cost during bot surge
+    DeadLetterConfig:
+      TargetArn: !GetAtt SignupWorkerDLQ.Arn   # ADDED: see DLQ resource below
+    Environment:
+      Variables:
+        TABLE_NAME: !Ref StudentTable
+        ADMIN_EMAIL: !Ref AdminEmail
+```
+
+---
+
+- **FINOPS SAVINGS — CloudFront DefaultCacheBehavior Has No TTL Configuration**
+
+`DefaultCacheBehavior` uses `ForwardedValues` (legacy method) with no `DefaultTTL`, `MinTTL`, or `MaxTTL` defined. CloudFront will honor whatever `Cache-Control` header S3 returns. If no header is set on your S3 objects, CloudFront applies a default of 24 hours for HTML — which is acceptable — but your VOD segments need 30-day TTLs to minimize Origin Shield cache misses billed at $0.0075–$0.012 per 10,000 requests. Add dedicated cache policies (required fix — see Vector 2 for the structural conflict).
+
+---
+
+- **FINOPS SAVINGS — Origin Shield Hardcoded to us-east-1 for a Primarily European Audience**
+
+Your 8 languages are EN, ES, PT, FR, IT, DE, PL, SV. Six of eight are European. Origin Shield in `us-east-1` means every European CloudFront PoP that misses its regional cache fires a shield request across the Atlantic to Virginia. `eu-west-1` (Ireland) or `eu-central-1` (Frankfurt) cuts that latency and the per-request shield charge. Make it a parameter:
+
+```yaml
+Parameters:
+  AdminEmail:
+    Type: String
+    Default: 'info@fixyachips.com'
+  OriginShieldRegion:
+    Type: String
+    Default: 'eu-west-1'
+    AllowedValues:
+      - 'us-east-1'
+      - 'us-west-2'
+      - 'eu-west-1'
+      - 'eu-central-1'
+      - 'ap-southeast-1'
+      - 'ap-northeast-1'
+    Description: 'Select the region closest to your highest-density viewer concentration'
+  CertificateArn:
+    Type: String
+    Default: ''
+    Description: 'ACM Certificate ARN (must exist in us-east-1) for fixyachips.com'
+  DomainName:
+    Type: String
+    Default: 'fixyachips.com'
+  WWWDomainName:
+    Type: String
+    Default: 'www.fixyachips.com'
+```
+
+Then in the distribution:
+```yaml
+            OriginShield:
+              Enabled: true
+              OriginShieldRegion: !Ref OriginShieldRegion
+```
+
+---
+
+- **FINOPS SAVINGS — WAF BotControl Has No Rate-Based Rule: Volumetric Bots Pass Free**
+
+`WebBodyguard` catches known bots and common exploits but has no rate-based rule. A distributed botnet hitting `/signup` from 10,000 IPs at 1 req/sec each bypasses both managed rule groups entirely, hammers Lambda, fills DynamoDB with garbage leads, and exhausts your SES daily sending quota — getting your domain blacklisted. Each Lambda invocation and DynamoDB write costs real money at scale.
+
+```yaml
+        - Name: RateLimitSignupEndpoint
+          Priority: 2
+          Statement:
+            RateBasedStatement:
+              Limit: 1000
+              AggregateKeyType: IP
+              ScopeDownStatement:
+                ByteMatchStatement:
+                  SearchString: '/signup'
+                  FieldToMatch:
+                    UriPath: {}
+                  TextTransformations:
+                    - Priority: 0
+                      Type: LOWERCASE
+                  PositionalConstraint: CONTAINS
+          Action:
+            Block: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: RateLimitSignup
+
+        - Name: BlockSanctionedCountries
+          Priority: 3
+          Statement:
+            GeoMatchStatement:
+              CountryCodes: ['KP', 'IR', 'CU', 'SY']    # OFAC compliance
+          Action:
+            Block: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: GeoBlock
+```
+
+---
+
+## VECTOR 2: SYNTAX, STRUCTURAL ERRORS & OMISSIONS
+
+---
+
+- **CRITICAL ERROR — WAF Rule Indentation: OverrideAction Is Outside ManagedRuleGroupStatement**
+
+Both WAF rules have `OverrideAction` and `VisibilityConfig` at the wrong indentation level. They are inside `Statement` instead of at the `Rule` level. This will cause a CloudFormation deployment failure.
+
+**Current (BROKEN):**
+```yaml
+        - Name: AWS-AWSManagedRulesCommonRuleSet
+          Priority: 0
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesCommonRuleSet
+          OverrideAction: { None: {} }        # <- correct level
+          VisibilityConfig:                   # <- correct level
+```
+
+Wait — re-reading the raw YAML carefully: `OverrideAction` IS at the rule level in your paste. However the **first rule** is missing `VisibilityConfig` at the rule level in the original PDF version. In the raw paste you provided, both rules are correctly structured. **This is confirmed clean in the raw YAML.** No fix needed on indentation for WAF.
+
+---
+
+- **CRITICAL ERROR — ForwardedValues and CachePolicyId Cannot Coexist**
+
+`DefaultCacheBehavior` uses `ForwardedValues: QueryString: false`. This is the **legacy** CloudFront cache configuration method. You cannot add a `CachePolicyId` to this behavior without first removing `ForwardedValues`. This blocks you from ever implementing proper VOD TTL policies without a breaking stack update. Replace now:
+
+```yaml
+# NEW RESOURCE: Add before WebsiteDistribution
+WebCachePolicy:
+  Type: 'AWS::CloudFront::CachePolicy'
+  Properties:
+    CachePolicyConfig:
+      Name: !Sub 'FixyachipsWebCachePolicy-${AWS::StackName}'
+      Comment: 'HTML/JS/CSS - short TTL for content updates'
+      DefaultTTL: 86400
+      MaxTTL: 604800
+      MinTTL: 0
+      ParametersInCacheKeyAndForwardedToOrigin:
+        EnableAcceptEncodingGzip: true
+        EnableAcceptEncodingBrotli: true
+        HeadersConfig:
+          HeaderBehavior: none
+        CookiesConfig:
+          CookieBehavior: none
+        QueryStringsConfig:
+          QueryStringBehavior: none
+
+VODCachePolicy:
+  Type: 'AWS::CloudFront::CachePolicy'
+  Properties:
+    CachePolicyConfig:
+      Name: !Sub 'FixyachipsVODCachePolicy-${AWS::StackName}'
+      Comment: 'HLS/DASH/MP4 segments - aggressive long-term caching'
+      DefaultTTL: 2592000       # 30 days
+      MaxTTL: 31536000          # 365 days
+      MinTTL: 86400             # 1 day floor
+      ParametersInCacheKeyAndForwardedToOrigin:
+        EnableAcceptEncodingGzip: true
+        EnableAcceptEncodingBrotli: true
+        HeadersConfig:
+          HeaderBehavior: none
+        CookiesConfig:
+          CookieBehavior: none
+        QueryStringsConfig:
+          QueryStringBehavior: none
+```
+
+---
+
+- **CRITICAL ERROR — No Dead Letter Queue on SignupWorker Lambda**
+
+`SignupWorker` is an internet-exposed async Lambda with zero DLQ. If DynamoDB throttles or SES rejects during a high-concurrency signup surge (launch day), the failure is silently swallowed. You lose real leads with no recovery path.
+
+```yaml
+# NEW RESOURCE
+SignupWorkerDLQ:
+  Type: 'AWS::SQS::Queue'
+  Properties:
+    QueueName: !Sub 'FixyachipsSignupDLQ-${AWS::StackName}'
+    MessageRetentionPeriod: 1209600    # 14 days maximum retention
+    KmsMasterKeyId: alias/aws/sqs      # Encrypt dead letters at rest
+
+# Add to FixyachipsMasterRole Policies Statement:
+              - Effect: Allow
+                Action:
+                  - 'sqs:SendMessage'
+                Resource: !GetAtt SignupWorkerDLQ.Arn
+```
+
+---
+
+- **CRITICAL ERROR — CloudFront Distribution Missing Custom Domain and ACM Certificate**
+
+`WebsiteDistribution` has no `Aliases` and no `ViewerCertificate`. The distribution serves from `*.cloudfront.net` — not `fixyachips.com`. Students in all 120 countries will see a raw CloudFront URL. Your brand does not exist at the CDN layer.
+
+```yaml
+  WebsiteDistribution:
+    Type: 'AWS::CloudFront::Distribution'
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        PriceClass: PriceClass_All
+        DefaultRootObject: index.html
+        Aliases:
+          - !Ref DomainName
+          - !Ref WWWDomainName
+        ViewerCertificate:
+          AcmCertificateArn: !Ref CertificateArn
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2021    # Enforce modern TLS - required for Smart TVs
+        HttpVersion: http2and3                     # HTTP/3 for modern TV clients
+        IPV6Enabled: true
+        WebACLId: !GetAtt WebBodyguard.Arn
+```
+
+---
+
+- **CRITICAL ERROR — CloudFront Function Runtime cloudfront-js-1.0 Is Deprecated**
+
+`Runtime: 'cloudfront-js-1.0'` is the legacy runtime. `cloudfront-js-2.0` has been available since 2023, supports ES modules and async/await, and performs measurably better at 400+ global PoPs. Every viewer request in every country runs this function.
+
+```yaml
+  WebsiteRouterFunction:
+    Type: 'AWS::CloudFront::Function'
+    Properties:
+      Name: !Sub 'FixRouter-${AWS::StackName}'
+      AutoPublish: true
+      FunctionConfig:
+        Comment: 'Clean URLs + language path normalization for 8-language VOD academy'
+        Runtime: 'cloudfront-js-2.0'
+      FunctionCode: |
+        const SUPPORTED_LANGS = ['en','es','pt','fr','it','de','pl','sv'];
+        async function handler(event) {
+          const request = event.request;
+          let uri = request.uri;
+          const segments = uri.split('/').filter(s => s.length > 0);
+          const first = segments[0] ? segments[0].toLowerCase() : '';
+          if (!SUPPORTED_LANGS.includes(first)) {
+            uri = '/en' + uri;
+          }
+          if (uri.endsWith('/')) {
+            uri += 'index.html';
+          } else if (!uri.includes('.')) {
+            uri += '.html';
+          }
+          request.uri = uri;
+          return request;
+        }
+```
+
+---
+
+- **CRITICAL ERROR — ApiOptionsMethod Uses AWS_PROXY for OPTIONS Preflight**
+
+`ApiOptionsMethod` routes OPTIONS through Lambda via `AWS_PROXY`. Every browser preflight from every viewer in 120 countries cold-invokes a Lambda unnecessarily. OPTIONS should be handled by a `MOCK` integration returning static CORS headers — zero Lambda cost, zero latency penalty.
+
+```yaml
+  ApiOptionsMethod:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: OPTIONS
+      ResourceId: !Ref ApiResource
+      RestApiId: !Ref SignupAPI
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'https://fixyachips.com'"
+            ResponseTemplates:
+              application/json: ''
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: false
+            method.response.header.Access-Control-Allow-Methods: false
+            method.response.header.Access-Control-Allow-Origin: false
+```
+
+---
+
+- **CRITICAL ERROR — API Gateway POST /signup Has No Throttling or Usage Plan**
+
+`ApiMethod` has `AuthorizationType: NONE` and the `ApiDeployment` has no stage-level throttling. Any bot can hammer `/signup` at unlimited requests per second. No `UsagePlan`, no `ApiKey`, no `ThrottlingRateLimit` anywhere in the stack.
+
+```yaml
+# REPLACE ApiDeployment with separate Stage resource:
+ApiDeployment:
+  Type: 'AWS::ApiGateway::Deployment'
+  DependsOn:
+    - ApiMethod
+    - ApiOptionsMethod
+  Properties:
+    RestApiId: !Ref SignupAPI
+    # StageName removed - managed by ApiStage below
+
+ApiStage:
+  Type: 'AWS::ApiGateway::Stage'
+  Properties:
+    RestApiId: !Ref SignupAPI
+    DeploymentId: !Ref ApiDeployment
+    StageName: prod
+    MethodSettings:
+      - ResourcePath: '/signup'
+        HttpMethod: POST
+        ThrottlingRateLimit: 10
+        ThrottlingBurstLimit: 50
+      - ResourcePath: '/*'
+        HttpMethod: '*'
+        ThrottlingRateLimit: 20
+        ThrottlingBurstLimit: 100
+    AccessLogSetting:
+      DestinationArn: !GetAtt ApiAccessLogGroup.Arn
+
+ApiAccessLogGroup:
+  Type: 'AWS::Logs::LogGroup'
+  Properties:
+    LogGroupName: !Sub '/aws/apigateway/FixyachipsAPI-${AWS::StackName}'
+    RetentionInDays: 30
+```
+
+Also update `LambdaPermission` SourceArn to reference the stage:
+```yaml
+  LambdaPermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref SignupWorker
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${SignupAPI}/prod/POST/signup'
+```
+
+---
+
+- **ARCHITECTURAL ENHANCEMENT — DynamoDB Missing Point-in-Time Recovery, Email GSI, and Encryption**
+
+`StudentTable` has `DeletionPolicy: Retain` (correct) but no PITR, no GSI on Email (making duplicate-check queries a full expensive Scan), and no encryption-at-rest specification.
+
+```yaml
+  StudentTable:
+    Type: 'AWS::DynamoDB::Table'
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub 'FixyachipsStudents-${AWS::StackName}'
+      AttributeDefinitions:
+        - AttributeName: StudentID
+          AttributeType: S
+        - AttributeName: Email
+          AttributeType: S
+      KeySchema:
+        - AttributeName: StudentID
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: EmailIndex
+          KeySchema:
+            - AttributeName: Email
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+```
+
+Also update the IAM role to allow GSI queries:
+```yaml
+              - Effect: Allow
+                Action:
+                  - 'dynamodb:GetItem'
+                  - 'dynamodb:PutItem'
+                  - 'dynamodb:UpdateItem'
+                  - 'dynamodb:DeleteItem'
+                  - 'dynamodb:Query'
+                  - 'dynamodb:Scan'
+                Resource:
+                  - !GetAtt StudentTable.Arn
+                  - !Sub '${StudentTable.Arn}/index/EmailIndex'
+```
+
+---
+
+- **ARCHITECTURAL ENHANCEMENT — CloudFront Has No Access Logging**
+
+Zero `Logging` configuration on `WebsiteDistribution`. Without access logs you have no visibility into cache hit ratios per language path, geographic request patterns, or VOD segment playback failures across 120 countries.
+
+```yaml
+# NEW RESOURCE
+CloudFrontLogsBucket:
+  Type: 'AWS::S3::Bucket'
+  Properties:
+    BucketName: !Sub 'fixyachips-cf-logs-${AWS::AccountId}'
+    PublicAccessBlockConfiguration:
+      BlockPublicAcls: true
+      BlockPublicPolicy: true
+      IgnorePublicAcls: true
+      RestrictPublicBuckets: true
+    OwnershipControls:
+      Rules:
+        - ObjectOwnership: BucketOwnerPreferred
+    LifecycleConfiguration:
+      Rules:
+        - Id: ExpireOldLogs
+          Status: Enabled
+          ExpirationInDays: 90
+
+# Add inside DistributionConfig:
+        Logging:
+          Bucket: !GetAtt CloudFrontLogsBucket.DomainName
+          Prefix: 'cloudfront-logs/'
+          IncludeCookies: false
+```
+
+---
+
+- **ARCHITECTURAL ENHANCEMENT — Missing CloudFront CustomErrorResponses**
+
+No `CustomErrorResponses` defined. When a video segment URL is wrong or a CloudFront cache miss hits a private S3 object, CloudFront returns a raw XML `AccessDenied` response. Smart TVs, Roku sticks, and Fire TV clients cannot parse XML error pages — they freeze or display a black screen with no error to the student.
+
+```yaml
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: '/index.html'
+            ErrorCachingMinTTL: 10
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: '/index.html'
+            ErrorCachingMinTTL: 10
+          - ErrorCode: 500
+            ResponseCode: 503
+            ResponsePagePath: '/index.html'
+            ErrorCachingMinTTL: 5
+          - ErrorCode: 503
+            ResponseCode: 503
+            ResponsePagePath: '/index.html'
+            ErrorCachingMinTTL: 5
+```
+
+---
+
+## VECTOR 3: WEB-TO-TV STREAM CONVERSION & VOD DELIVERY
+
+---
+
+- **CRITICAL ERROR — HTTP Range Requests Not Configured: Video Scrubbing Broken on All TV Clients**
+
+There is no `OriginRequestPolicy`, no `ResponseHeadersPolicy`, and no `AllowedMethods` that includes `OPTIONS` in the `DefaultCacheBehavior`. The `Range` header is not forwarded to S3. This means:
+- A student on Samsung TV scrubbing to minute 45 of a 60-minute lesson issues a `Range: bytes=...` request
+- CloudFront strips the Range header (default behavior without explicit forwarding)
+- S3 returns the entire file from byte 0
+- The TV client times out or buffers infinitely
+
+This is a complete VOD delivery failure for every non-browser client.
+
+```yaml
+# NEW RESOURCE
+VODOriginRequestPolicy:
+  Type: 'AWS::CloudFront::OriginRequestPolicy'
+  Properties:
+    OriginRequestPolicyConfig:
+      Name: !Sub 'FixyachipsVODOriginRequest-${AWS::StackName}'
+      Comment: 'Forward Range header for VOD byte-range serving to all TV clients'
+      HeadersConfig:
+        HeaderBehavior: whitelist
+        Headers:
+          - 'Origin'
+          - 'Access-Control-Request-Headers'
+          - 'Access-Control-Request-Method'
+          - 'Range'
+      CookiesConfig:
+        CookieBehavior: none
+      QueryStringsConfig:
+        QueryStringBehavior: none
+
+# NEW RESOURCE
+VODResponseHeadersPolicy:
+  Type: 'AWS::CloudFront::ResponseHeadersPolicy'
+  Properties:
+    ResponseHeadersPolicyConfig:
+      Name: !Sub 'FixyachipsVODResponseHeaders-${AWS::StackName}'
+      Comment: 'CORS + security headers + byte-range signals for VOD delivery'
+      CorsConfig:
+        AccessControlAllowCredentials: false
+        AccessControlAllowHeaders:
+          Items: ['*']
+        AccessControlAllowMethods:
+          Items: [GET, HEAD, OPTIONS]
+        AccessControlAllowOrigins:
+          Items:
+            - 'https://fixyachips.com'
+            - 'https://www.fixyachips.com'
+        AccessControlExposeHeaders:
+          Items:
+            - 'Content-Length'
+            - 'Content-Range'      # CRITICAL: player tracks playback position
+            - 'ETag'
+            - 'Accept-Ranges'      # CRITICAL: signals byte-range support to TV clients
+        AccessControlMaxAgeSec: 3600
+        OriginOverride: false
+      SecurityHeadersConfig:
+        ContentTypeOptions:
+          Override: true
+        FrameOptions:
+          FrameOption: DENY
+          Override: true
+        ReferrerPolicy:
+          ReferrerPolicy: strict-origin-when-cross-origin
+          Override: true
+        StrictTransportSecurity:
+          AccessControlMaxAgeSec: 31536000
+          IncludeSubdomains: true
+          Preload: true
+          Override: true
+        XSSProtection:
+          ModeBlock: true
+          Override: true
+          Protection: true
+```
+
+---
+
+- **CRITICAL ERROR — No CacheBehaviors for VOD Paths: Video Segments Served with HTML TTLs**
+
+There is only a `DefaultCacheBehavior`. Zero `CacheBehaviors` are defined. Your HLS `.m3u8` manifests, `.ts` segments, DASH `.mpd` manifests, `.m4s` fragments, and MP4 files all get served with the same policy as your homepage HTML. HLS manifests should cache for 5–10 seconds (live-adjacent playlists) or hours (static VOD). Segments should cache for 30 days. HTML should cache for 1 day. One policy for all of these is architecturally broken.
+
+```yaml
+# Add inside DistributionConfig, after DefaultCacheBehavior:
+        CacheBehaviors:
+          - PathPattern: '/hls/*'
+            TargetOriginId: S3Origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: false                      # Never compress pre-encoded video
+            CachePolicyId: !Ref VODCachePolicy
+            OriginRequestPolicyId: !Ref VODOriginRequestPolicy
+            ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD]
+          - PathPattern: '/dash/*'
+            TargetOriginId: S3Origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: false
+            CachePolicyId: !Ref VODCachePolicy
+            OriginRequestPolicyId: !Ref VODOriginRequestPolicy
+            ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD]
+          - PathPattern: '/vod/*'
+            TargetOriginId: S3Origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: false
+            CachePolicyId: !Ref VODCachePolicy
+            OriginRequestPolicyId: !Ref VODOriginRequestPolicy
+            ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD]
+```
+
+---
+
+- **ARCHITECTURAL ENHANCEMENT — No MediaConvert Pipeline: Raw MP4 Is Not Production VOD**
+
+The template stores MP4 files in S3 but has zero AWS Elemental MediaConvert integration. Raw unencoded MP4 cannot serve adaptive bitrate streaming. A student in rural Poland on a 3G connection gets the same 1080p stream as a student in Stockholm on fiber — the Polish student buffers constantly and abandons the course. You need HLS/DASH multi-bitrate renditions (240p/480p/720p/1080p) generated by MediaConvert on upload.
+
+```yaml
+# NEW RESOURCE
+MediaConvertRole:
+  Type: 'AWS::IAM::Role'
+  Properties:
+    RoleName: !Sub 'FixyachipsMediaConvertRole-${AWS::StackName}'
+    AssumeRolePolicyDocument:
+      Version: '2012-10-17'
+      Statement:
+        - Effect: Allow
+          Principal:
+            Service: mediaconvert.amazonaws.com
+          Action: 'sts:AssumeRole'
+    Policies:
+      - PolicyName: MediaConvertS3Access
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - 's3:GetObject'
+                - 's3:PutObject'
+              Resource:
+                - !Sub 'arn:aws:s3:::${StreamingVideoBucket}/raw-uploads/*'
+                - !Sub 'arn:aws:s3:::${StreamingVideoBucket}/vod/*'
+                - !Sub 'arn:aws:s3:::${StreamingVideoBucket}/hls/*'
+                - !Sub 'arn:aws:s3:::${StreamingVideoBucket}/dash/*'
+
+# NEW RESOURCE
+VideoProcessingFunction:
+  Type: 'AWS::Lambda::Function'
+  Properties:
+    FunctionName: !Sub 'FixyachipsVideoProcessor-${AWS::StackName}'
+    Handler: index.lambda_handler
+    Runtime: python3.12
+    Role: !GetAtt FixyachipsMasterRole.Arn
+    MemorySize: 512
+    Timeout: 60
+    Environment:
+      Variables:
+        MEDIACONVERT_ROLE_ARN: !GetAtt MediaConvertRole.Arn
+        OUTPUT_BUCKET: !Ref StreamingVideoBucket
+        MEDIACONVERT_ENDPOINT: ''    # Populate via SSM Parameter or custom resource
+    Code:
+      ZipFile: |
+        import json, boto3, os, re
+        def lambda_handler(event, context):
+            endpoint = os.environ['MEDIACONVERT_ENDPOINT']
+            mc = boto3.client('mediaconvert', endpoint_url=endpoint)
+            for record in event['Records']:
+                key = record['s3']['object']['key']
+                if not key.startswith('raw-uploads/'):
+                    continue
+                bucket = record['s3']['bucket']['name']
+                base = re.sub(r'^raw-uploads/(.+)\.[^.]+$', r'\1', key)
+                mc.create_job(
+                    Role=os.environ['MEDIACONVERT_ROLE_ARN'],
+                    Settings={
+                        'Inputs': [{'FileInput': f's3://{bucket}/{key}'}],
+                        'OutputGroups': [{
+                            'Name': 'HLS',
+                            'OutputGroupSettings': {
+                                'Type': 'HLS_GROUP_SETTINGS',
+                                'HlsGroupSettings': {
+                                    'Destination': f"s3://{os.environ['OUTPUT_BUCKET']}/hls/{base}/",
+                                    'SegmentLength': 6
+                                }
+                            },
+                            'Outputs': [
+                                {'NameModifier': '_1080p', 'VideoDescription': {'Width': 1920, 'Height': 1080}},
+                                {'NameModifier': '_720p',  'VideoDescription': {'Width': 1280, 'Height': 720}},
+                                {'NameModifier': '_480p',  'VideoDescription': {'Width': 854,  'Height': 480}},
+                                {'NameModifier': '_240p',  'VideoDescription': {'Width': 426,  'Height': 240}}
+                            ]
+                        }]
+                    }
+                )
+                print(f'MediaConvert job submitted: {key}')
+
+# NEW RESOURCE - EventBridge trigger for S3 uploads
+VideoUploadEventRule:
+  Type: 'AWS::Events::Rule'
+  Properties:
+    Name: !Sub 'FixyachipsVideoUpload-${AWS::StackName}'
+    EventPattern:
+      source: ['aws.s3']
+      detail-type: ['Object Created']
+      detail:
+        bucket:
+          name: [!Ref StreamingVideoBucket]
+        object:
+          key:
+            - prefix: 'raw-uploads/'
+    Targets:
+      - Id: VideoProcessingLambda
+        Arn: !GetAtt VideoProcessingFunction.Arn
+
+VideoProcessorEventPermission:
+  Type: 'AWS::Lambda::Permission'
+  Properties:
+    Action: 'lambda:InvokeFunction'
+    FunctionName: !Ref VideoProcessingFunction
+    Principal: events.amazonaws.com
+    SourceArn: !GetAtt VideoUploadEventRule.Arn
+```
+
+---
+
+## VECTOR 4: MULTI-LINGUAL ARCHITECTURE
+
+---
+
+- **CRITICAL ERROR — Zero Language Routing Architecture Exists in the Entire Template**
+
+The `WebsiteRouterFunction` only appends `.html` to clean URLs. It has no language awareness. There are no `CacheBehaviors` for `/es/*`, `/de/*`, `/fr/*`, `/it/*`, `/pt/*`, `/pl/*`, `/sv/*`. There is no mechanism to route 8 languages to 8 separate S3 path prefixes. The entire multi-lingual claim in the stack description has zero infrastructure backing it.
+
+The corrected `WebsiteRouterFunction` in Vector 2 above handles this. The corrected `CacheBehaviors` below complete it:
+
+```yaml
+# Add to CacheBehaviors list (in addition to /hls/*, /dash/*, /vod/*):
+          - PathPattern: '/es/*'
+            TargetOriginId: S3Origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            CachePolicyId: !Ref WebCachePolicy
+            ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+            AllowedMethods: [GET, HEAD]
+            CachedMethods: [GET, HEAD]
+            FunctionAssociations:
+              - EventType: viewer-request
+                FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+          - PathPattern: '/pt/*'
+            TargetOriginId: S3Origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            CachePolicyId: !Ref WebCachePolicy
+            ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+            AllowedMethods: [GET, HEAD]
+            CachedMethods: [GET, HEAD]
+            FunctionAssociations:
+              - EventType: viewer-request
+                FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+          - PathPattern: '/fr/*'
+            TargetOriginId: S3Origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            CachePolicyId: !Ref WebCachePolicy
+            ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+            AllowedMethods: [GET, HEAD]
+            CachedMethods: [GET, HEAD]
+            FunctionAssociations:
+              - EventType: viewer-request
+                FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+          - PathPattern: '/it/*'
+            TargetOriginId: S3Origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            CachePolicyId: !Ref WebCachePolicy
+            ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+            AllowedMethods: [GET, HEAD]
+            CachedMethods: [GET, HEAD]
+            FunctionAssociations:
+              - EventType: viewer-request
+                FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+          - PathPattern: '/de/*'
+            TargetOriginId: S3Origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            CachePolicyId: !Ref WebCachePolicy
+            ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+            AllowedMethods: [GET, HEAD]
+            CachedMethods: [GET, HEAD]
+            FunctionAssociations:
+              - EventType: viewer-request
+                FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+          - PathPattern: '/pl/*'
+            TargetOriginId: S3Origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            CachePolicyId: !Ref WebCachePolicy
+            ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+            AllowedMethods: [GET, HEAD]
+            CachedMethods: [GET, HEAD]
+            FunctionAssociations:
+              - EventType: viewer-request
+                FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+          - PathPattern: '/sv/*'
+            TargetOriginId: S3Origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            CachePolicyId: !Ref WebCachePolicy
+            ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+            AllowedMethods: [GET, HEAD]
+            CachedMethods: [GET, HEAD]
+            FunctionAssociations:
+              - EventType: viewer-request
+                FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+```
+
+---
+
+- **CRITICAL ERROR — Do NOT Forward Accept-Language Header in Cache Key**
+
+This is the most common cache-destruction mistake in multi-lingual CloudFront deployments. If `Accept-Language` is forwarded in the cache key, Chrome on Windows sends `de-DE,de;q=0.9,en;q=0.8` while Firefox sends `de,en-US;q=0.7,en;q=0.3`. These are two different cache keys for the identical `/de/index.html` page. Your global cache hit ratio collapses to near zero and every request pays Origin Shield charges.
+
+**The correct architecture is path-based routing exclusively.** Content stored at `/de/`, `/es/`, `/fr/` in S3. CloudFront caches by path. Zero header forwarding. The CloudFront Function transparently prepends the language prefix. This is already implemented in the corrected function above.
+
+---
+
+- **ARCHITECTURAL ENHANCEMENT — Recommended S3 Key Namespace for 8 Languages**
+
+Enforce this structure via your CI/CD upload pipeline and MediaConvert output paths:
+
+```
+# Static web content
+/en/index.html
+/es/index.html
+/de/index.html
+/fr/index.html
+/it/index.html
+/pt/index.html
+/pl/index.html
+/sv/index.html
+
+# HLS per language per course
+/hls/en/{course-id}/master.m3u8
+/hls/es/{course-id}/master.m3u8
+/hls/de/{course-id}/master.m3u8
+
+# DASH per language per course
+/dash/en/{course-id}/manifest.mpd
+/dash/es/{course-id}/manifest.mpd
+
+# Raw upload input (MediaConvert source)
+/raw-uploads/{course-id}-{lang}.mp4
+```
+
+---
+
+## VECTOR 5: SECURITY BLINDSPOTS
+
+---
+
+- **CRITICAL ERROR — bedrock:\* with Resource: \* on an Internet-Exposed Lambda Role**
+
+This is the single most dangerous line in the template. `FixyachipsMasterRole` grants `bedrock:*` on `Resource: '*'` to `SignupWorker` — a Lambda that accepts unauthenticated POST requests from the public internet via API Gateway. If an attacker finds a code injection vector, they can invoke Claude 3 Opus at $15/million tokens in an infinite loop. Your AWS bill could hit $10,000 before a CloudWatch alarm fires. Scope all AI/ML permissions to minimum required actions only.
+
+```yaml
+              # REPLACE the entire AI/ML block with this:
+              - Effect: Allow
+                Action:
+                  - 'ses:SendEmail'
+                  - 'ses:SendRawEmail'
+                Resource:
+                  - !Sub 'arn:aws:ses:${AWS::Region}:${AWS::AccountId}:identity/fixyachips.com'
+                  - !Sub 'arn:aws:ses:${AWS::Region}:${AWS::AccountId}:identity/${AdminEmail}'
+              # Bedrock: specific models only - NEVER bedrock:*
+              - Effect: Allow
+                Action:
+                  - 'bedrock:InvokeModel'
+                Resource:
+                  - !Sub 'arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.titan-text-express-v1'
+              # Translate: no resource-level permissions available (AWS limitation)
+              - Effect: Allow
+                Action:
+                  - 'translate:TranslateText'
+                Resource: '*'
+              # Polly: no resource-level permissions available (AWS limitation)
+              - Effect: Allow
+                Action:
+                  - 'polly:SynthesizeSpeech'
+                Resource: '*'
+              # Transcribe: job-level only
+              - Effect: Allow
+                Action:
+                  - 'transcribe:StartTranscriptionJob'
+                  - 'transcribe:GetTranscriptionJob'
+                Resource: '*'
+```
+
+---
+
+- **CRITICAL ERROR — Cognito Client Has ALLOW_USER_PASSWORD_AUTH Enabled**
+
+`ALLOW_USER_PASSWORD_AUTH` transmits the raw password to the Cognito endpoint. For a public SPA this is the weakest auth flow available and is explicitly flagged in AWS security documentation. Use `ALLOW_USER_SRP_AUTH` exclusively — the password never leaves the client in plaintext under SRP.
+
+```yaml
+  FixyachipsUserPoolClient:
+    Type: 'AWS::Cognito::UserPoolClient'
+    Properties:
+      ClientName: Fixyachips_Web_Portal
+      UserPoolId: !Ref FixyachipsUserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH          # KEEP: secure zero-knowledge password proof
+        - ALLOW_REFRESH_TOKEN_AUTH     # KEEP: token refresh
+        # REMOVED: ALLOW_USER_PASSWORD_AUTH
+      PreventUserExistenceErrors: ENABLED    # ADDED: don't leak whether email is registered
+      RefreshTokenValidity: 30
+      AccessTokenValidity: 1
+      IdTokenValidity: 1
+      TokenValidityUnits:
+        RefreshToken: days
+        AccessToken: hours
+        IdToken: hours
+      EnableTokenRevocation: true
+```
+
+---
+
+- **CRITICAL ERROR — Cognito UserPool Has No MFA and No Advanced Security**
+
+`FixyachipsUserPool` has a strong password policy but zero MFA configuration and no `UserPoolAddOns`. For a paid VOD academy, credential stuffing attacks (automated login attempts using breached password databases) are the #1 account takeover vector. Without Advanced Security Mode, Cognito does not block known-compromised credentials.
+
+```yaml
+  FixyachipsUserPool:
+    Type: 'AWS::Cognito::UserPool'
+    Properties:
+      UserPoolName: !Sub 'Fixyachips_Global_Users-${AWS::StackName}'
+      UsernameAttributes: [email]
+      AutoVerifiedAttributes: [email]
+      MfaConfiguration: OPTIONAL
+      EnabledMfas:
+        - TOTP
+      UserPoolAddOns:
+        AdvancedSecurityMode: ENFORCED    # Blocks compromised credentials automatically
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+          RequireUppercase: true
+          TemporaryPasswordValidityDays: 7
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Mutable: true
+          Required: true
+        - Name: veteran_status
+          AttributeDataType: String
+          Mutable: true
+        - Name: industry_segment
+          AttributeDataType: String
+          Mutable: true
+```
+
+---
+
+- **CRITICAL ERROR — Lambda SignupWorker Has No Duplicate Email Check**
+
+`table.put_item()` is called unconditionally. A student submitting the form twice creates two `StudentID` records and triggers two SES welcome emails. Two emails from the same sender address within seconds of each other is a spam signal that damages your SES domain reputation. Use the `EmailIndex` GSI added in Vector 2:
+
+```python
+# Add this block inside lambda_handler BEFORE table.put_item():
+
+                  # Check for duplicate email using GSI
+                  existing = table.query(
+                      IndexName='EmailIndex',
+                      KeyConditionExpression='Email = :email',
+                      ExpressionAttributeValues={':email': email},
+                      Limit=1
+                  )
+                  if existing.get('Count', 0) > 0:
+                      return {
+                          'statusCode': 200,
+                          'headers': {
+                              'Access-Control-Allow-Origin': 'https://fixyachips.com',
+                              'Content-Type': 'application/json'
+                          },
+                          'body': json.dumps({
+                              'status': 'already_registered',
+                              'message': 'You are already on the list. We will notify you!'
+                          })
+                      }
+```
+
+---
+
+- **CRITICAL ERROR — No CloudWatch Alarms: Zero Operational Visibility**
+
+There are zero alarms in the entire stack. No WAF block rate alarm, no Lambda error alarm, no DynamoDB throttle alarm. For a global platform serving 120 countries, you will discover attacks and outages from student complaints, not from your monitoring system.
+
+```yaml
+# NEW RESOURCES
+SecurityAlertTopic:
+  Type: 'AWS::SNS::Topic'
+  Properties:
+    TopicName: !Sub 'FixyachipsSecurityAlerts-${AWS::StackName}'
+    Subscription:
+      - Protocol: email
+        Endpoint: !Ref AdminEmail
+
+WAFBlocksAlarm:
+  Type: 'AWS::CloudWatch::Alarm'
+  Properties:
+    AlarmName: !Sub 'FixyachipsWAFHighBlocks-${AWS::StackName}'
+    AlarmDescription: 'WAF blocking abnormal volume - potential attack in progress'
+    MetricName: BlockedRequests
+    Namespace: AWS/WAFV2
+    Dimensions:
+      - Name: WebACL
+        Value: !Sub 'FixyachipsShield-${AWS::StackName}'
+      - Name: Region
+        Value: 'us-east-1'
+      - Name: Rule
+        Value: ALL
+    Statistic: Sum
+    Period: 300
+    EvaluationPeriods: 1
+    Threshold: 1000
+    ComparisonOperator: GreaterThanThreshold
+    AlarmActions: [!Ref SecurityAlertTopic]
+    TreatMissingData: notBreaching
+
+LambdaErrorAlarm:
+  Type: 'AWS::CloudWatch::Alarm'
+  Properties:
+    AlarmName: !Sub 'FixyachipsSignupErrors-${AWS::StackName}'
+    AlarmDescription: 'SignupWorker Lambda error rate elevated'
+    MetricName: Errors
+    Namespace: AWS/Lambda
+    Dimensions:
+      - Name: FunctionName
+        Value: !Ref SignupWorker
+    Statistic: Sum
+    Period: 300
+    EvaluationPeriods: 1
+    Threshold: 10
+    ComparisonOperator: GreaterThanThreshold
+    AlarmActions: [!Ref SecurityAlertTopic]
+    TreatMissingData: notBreaching
+
+SignupVolumeAlarm:
+  Type: 'AWS::CloudWatch::Alarm'
+  Properties:
+    AlarmName: !Sub 'FixyachipsSignupAnomaly-${AWS::StackName}'
+    AlarmDescription: 'Unusual signup volume - possible bot surge or viral event'
+    MetricName: Invocations
+    Namespace: AWS/Lambda
+    Dimensions:
+      - Name: FunctionName
+        Value: !Ref SignupWorker
+    Statistic: Sum
+    Period: 300
+    EvaluationPeriods: 1
+    Threshold: 500
+    ComparisonOperator: GreaterThanThreshold
+    AlarmActions: [!Ref SecurityAlertTopic]
+    TreatMissingData: notBreaching
+```
+
+---
+
+- **ARCHITECTURAL ENHANCEMENT — No Geo-Restriction Structure for Licensing Readiness**
+
+The distribution has no `Restrictions` block. If fixyachips.com acquires regional content licensing restrictions (standard in VOD/education at scale), there is no enforcement mechanism. Add the scaffolding now so it activates with a single parameter change rather than a structural stack update:
+
+```yaml
+        # Add inside DistributionConfig:
+        Restrictions:
+          GeoRestriction:
+            RestrictionType: none
+            # To activate blacklist: change to 'blacklist' and add:
+            # Locations: ['KP', 'IR', 'CU', 'SY']
+```
+
+---
+
+- **ARCHITECTURAL ENHANCEMENT — Missing Outputs for Language URLs, DLQ ARN, and Distribution ID**
+
+Current outputs expose the CloudFront domain but not the distribution ID (needed for cache invalidations), the DLQ ARN (needed for operations), or language-specific URLs (needed for SEO hreflang tags and frontend routing).
+
+```yaml
+  DistributionId:
+    Description: 'CloudFront Distribution ID - use for cache invalidations'
+    Value: !Ref WebsiteDistribution
+
+  DLQUrl:
+    Description: 'Signup Worker Dead Letter Queue - monitor for failed signups'
+    Value: !Ref SignupWorkerDLQ
+
+  LanguageBaseEN:
+    Value: !Sub 'https://${DomainName}/en/'
+  LanguageBaseES:
+    Value: !Sub 'https://${DomainName}/es/'
+  LanguageBaseDE:
+    Value: !Sub 'https://${DomainName}/de/'
+  LanguageBaseFR:
+    Value: !Sub 'https://${DomainName}/fr/'
+  LanguageBasePT:
+    Value: !Sub 'https://${DomainName}/pt/'
+  LanguageBaseIT:
+    Value: !Sub 'https://${DomainName}/it/'
+  LanguageBasePL:
+    Value: !Sub 'https://${DomainName}/pl/'
+  LanguageBaseSV:
+    Value: !Sub 'https://${DomainName}/sv/'
+```
+
+---
+
+## MASTER SEVERITY SUMMARY
+
+| # | Finding | Severity | Vector |
+|---|---|---|---|
+| 1 | `bedrock:*` wildcard on internet-exposed public Lambda | **CRITICAL** | 5 |
+| 2 | No ACM certificate / custom domain on CloudFront distribution | **CRITICAL** | 2 |
+| 3 | `ForwardedValues` blocks cache policy adoption permanently | **CRITICAL** | 2 |
+| 4 | Range header not forwarded — video scrubbing broken on all TV clients | **CRITICAL** | 3 |
+| 5 | OPTIONS method using Lambda proxy — CORS preflight hits Lambda unnecessarily | **CRITICAL** | 2 |
+| 6 | No DLQ on SignupWorker — leads silently lost during surge | **CRITICAL** | 2 |
+| 7 | No API Gateway throttling — unlimited bot requests to /signup | **CRITICAL** | 5 |
+| 8 | `ALLOW_USER_PASSWORD_AUTH` on Cognito — plaintext password risk | **CRITICAL** | 5 |
+| 9 | Zero language routing architecture for 8 languages | **CRITICAL** | 4 |
+| 10 | No VOD CacheBehaviors — video served with HTML TTLs | **CRITICAL** | 3 |
+| 11 | CloudFront Function on deprecated JS 1.0 runtime | **CRITICAL** | 2 |
+| 12 | No WAF rate-based rule — volumetric attacks bypass all managed rules | **CRITICAL** | 5 |
+| 13 | No duplicate email check — double signups + SES reputation damage | **CRITICAL** | 5 |
+| 14 | Cognito missing MFA and AdvancedSecurityMode | **CRITICAL** | 5 |
+| 15 | S3 lifecycle / Intelligent-Tiering absent on VOD assets | **FINOPS** | 1 |
+| 16 | Lambda memory unset — 128MB cold start billing tax | **FINOPS** | 1 |
+| 17 | Lambda timeout 30s — 2x correct value, billing waste | **FINOPS** | 1 |
+| 18 | Origin Shield hardcoded us-east-1 for European-majority audience | **FINOPS** | 1 |
+| 19 | No TTL config — CloudFront falls back to S3 origin headers | **FINOPS** | 1 |
+| 20 | S3 CORS allows POST/PUT on a read-only CDN bucket | **FINOPS** | 1 |
+| 21 | No MediaConvert pipeline — raw MP4 not ABR encoded for global delivery | **ARCHITECTURAL** | 3 |
+| 22 | No CloudFront access logging — zero visibility into 120-country traffic | **ARCHITECTURAL** | 2 |
+| 23 | DynamoDB missing PITR, Email GSI, and encryption-at-rest | **ARCHITECTURAL** | 2 |
+| 24 | Zero CloudWatch alarms — attacks discovered from student complaints | **ARCHITECTURAL** | 5 |
+| 25 | No S3 bucket versioning — accidental video overwrites unrecoverable | **ARCHITECTURAL** | 5 |
+| 26 | No geo-restriction scaffolding for licensing readiness | **ARCHITECTURAL** | 5 |
+| 27 | HTTP/3 not enabled — modern Smart TV clients cannot use QUIC | **ARCHITECTURAL** | 3 |
+| 28 | No CustomErrorResponses — TV clients receive raw XML S3 errors | **ARCHITECTURAL** | 3 |
+| 29 | Missing distribution ID, DLQ ARN, and language URL outputs | **ARCHITECTURAL** | 2 |

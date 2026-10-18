@@ -1,0 +1,73 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "MediaConvertJobManagement",
+      "Effect": "Allow",
+      "Action": [
+        "mediaconvert:CreateJob",
+        "mediaconvert:GetJob",
+        "mediaconvert:DescribeEndpoints",
+        "mediaconvert:ListJobs"
+      ],
+      "Resource": "arn:aws:mediaconvert:us-east-1:980049663300:*"
+    },
+    {
+      "Sid": "AllowPassMediaConvertRole",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "arn:aws:iam::980049663300:role/MediaConvert_VOD_Localization_Role",
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": "mediaconvert.amazonaws.com"
+        }
+      }
+    },
+    {
+      "Sid": "SourceBucketAccess",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:GetBucketLocation"
+      ],
+      "Resource": [
+        "arn:aws:s3:::videoondemandfixyachips-source71e471f1-wlr7kazkufmk",
+        "arn:aws:s3:::videoondemandfixyachips-source71e471f1-wlr7kazkufmk/*"
+      ]
+    },
+    {
+      "Sid": "DestinationBucketAccess",
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject",
+        "s3:GetBucketLocation"
+      ],
+      "Resource": [
+        "arn:aws:s3:::videoondemandfixyachips-destination920a3c57-ykrxy0jwcztr",
+        "arn:aws:s3:::videoondemandfixyachips-destination920a3c57-ykrxy0jwcztr/*"
+      ]
+    },
+    {
+      "Sid": "ManualsBucketAccess",
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject",
+        "s3:GetBucketLocation"
+      ],
+      "Resource": [
+        "arn:aws:s3:::videoondemandfixyachips-manuals",
+        "arn:aws:s3:::videoondemandfixyachips-manuals/*"
+      ]
+    },
+    {
+      "Sid": "CloudWatchLogging",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+      ],
+      "Resource": "arn:aws:logs:us-east-1:980049663300:log-group:/aws/stepfunctions/*"
+    }
+  ]
+}

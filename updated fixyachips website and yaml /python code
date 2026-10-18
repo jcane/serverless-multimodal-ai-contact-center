@@ -1,0 +1,31 @@
+import json
+import boto3
+import uuid
+import os
+
+dynamodb = boto3.resource('dynamodb')
+# Use the table name created by your YAML
+TABLE_NAME = os.environ.get('TABLE_NAME', 'FixyachipsStudents-StackName')
+table = dynamodb.Table(TABLE_NAME)
+
+def lambda_handler(event, context):
+    try:
+        body = json.loads(event['body'])
+        
+        table.put_item(Item={
+            'StudentID': str(uuid.uuid4()),
+            'Name': body['name'],
+            'Email': body['email'],
+            'Status': 'PRE-SIGNUP'
+        })
+        
+        return {
+            'statusCode': 200,
+            'headers': {'Access-Control-Allow-Origin': '*'},
+            'body': json.dumps({'message': 'Successfully registered'})
+        }
+    except Exception as e:
+        return {
+            'statusCode': 500,
+            'body': json.dumps({'error': str(e)})
+        }

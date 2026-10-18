@@ -1,0 +1,170 @@
+WebsiteDistribution:
+  Type: 'AWS::CloudFront::Distribution'
+  DependsOn:
+    - EmpireOAC
+    - WebBodyguard
+    - VODCachePolicy
+    - WebCachePolicy
+    - VODOriginRequestPolicy
+    - VODResponseHeadersPolicy
+  Properties:
+    DistributionConfig:
+      Enabled: true
+      PriceClass: PriceClass_All
+      DefaultRootObject: index.html
+      Aliases:
+        - !Ref DomainName
+        - !Ref WWWDomainName
+      ViewerCertificate:
+        AcmCertificateArn: !Ref CertificateArn
+        SslSupportMethod: sni-only
+        MinimumProtocolVersion: TLSv1.2_2021
+      WebACLId: !GetAtt WebBodyguard.Arn
+      HttpVersion: http2and3          # Enable HTTP/3 for modern TV clients
+      IPV6Enabled: true
+      Logging:
+        Bucket: !GetAtt CloudFrontLogsBucket.DomainName
+        Prefix: 'cloudfront-logs/'
+        IncludeCookies: false
+      Origins:
+        - Id: S3Origin
+          DomainName: !GetAtt StreamingVideoBucket.RegionalDomainName
+          S3OriginConfig:
+            OriginAccessIdentity: ""
+          OriginAccessControlId: !GetAtt EmpireOAC.Id
+          OriginShield:
+            Enabled: true
+            OriginShieldRegion: !Ref OriginShieldRegion
+      DefaultCacheBehavior:
+        TargetOriginId: S3Origin
+        ViewerProtocolPolicy: redirect-to-https
+        Compress: true
+        CachePolicyId: !Ref WebCachePolicy
+        ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+        AllowedMethods: [GET, HEAD, OPTIONS]
+        CachedMethods: [GET, HEAD, OPTIONS]
+        FunctionAssociations:
+          - EventType: viewer-request
+            FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+      CacheBehaviors:
+        - PathPattern: '/hls/*'
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: false
+          CachePolicyId: !Ref VODCachePolicy
+          OriginRequestPolicyId: !Ref VODOriginRequestPolicy
+          ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD]
+        - PathPattern: '/dash/*'
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: false
+          CachePolicyId: !Ref VODCachePolicy
+          OriginRequestPolicyId: !Ref VODOriginRequestPolicy
+          ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD]
+        - PathPattern: '/vod/*'
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: false
+          CachePolicyId: !Ref VODCachePolicy
+          OriginRequestPolicyId: !Ref VODOriginRequestPolicy
+          ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD]
+        - PathPattern: '/es/*'
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          CachePolicyId: !Ref WebCachePolicy
+          ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+          AllowedMethods: [GET, HEAD]
+          CachedMethods: [GET, HEAD]
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+        - PathPattern: '/pt/*'
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          CachePolicyId: !Ref WebCachePolicy
+          ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+          AllowedMethods: [GET, HEAD]
+          CachedMethods: [GET, HEAD]
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+        - PathPattern: '/fr/*'
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          CachePolicyId: !Ref WebCachePolicy
+          ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+          AllowedMethods: [GET, HEAD]
+          CachedMethods: [GET, HEAD]
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+        - PathPattern: '/it/*'
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          CachePolicyId: !Ref WebCachePolicy
+          ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+          AllowedMethods: [GET, HEAD]
+          CachedMethods: [GET, HEAD]
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+        - PathPattern: '/de/*'
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          CachePolicyId: !Ref WebCachePolicy
+          ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+          AllowedMethods: [GET, HEAD]
+          CachedMethods: [GET, HEAD]
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+        - PathPattern: '/pl/*'
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          CachePolicyId: !Ref WebCachePolicy
+          ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+          AllowedMethods: [GET, HEAD]
+          CachedMethods: [GET, HEAD]
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+        - PathPattern: '/sv/*'
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          CachePolicyId: !Ref WebCachePolicy
+          ResponseHeadersPolicyId: !Ref VODResponseHeadersPolicy
+          AllowedMethods: [GET, HEAD]
+          CachedMethods: [GET, HEAD]
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+      CustomErrorResponses:
+        - ErrorCode: 403
+          ResponseCode: 200
+          ResponsePagePath: '/index.html'
+          ErrorCachingMinTTL: 10
+        - ErrorCode: 404
+          ResponseCode: 200
+          ResponsePagePath: '/index.html'
+          ErrorCachingMinTTL: 10
+        - ErrorCode: 500
+          ResponseCode: 503
+          ResponsePagePath: '/en/error.html'
+          ErrorCachingMinTTL: 5
+      Restrictions:
+        GeoRestriction:
+          RestrictionType: none
+

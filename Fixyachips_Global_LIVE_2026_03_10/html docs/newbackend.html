@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <script async src="https://www.googletagmanager.com/gtag/js?id=AW-1052362672"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'AW-1052362672');
+    </script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fixyachips Academy | The No-Drill Portal</title>
+    <link rel="stylesheet" href="/styles.css">
+    
+    <style>
+        /* --- ACADEMY DESKTOP APP ENGINE --- */
+        body {
+            background-color: #000000 !important; /* Locks canvas to Pure Black */
+            color: #ffffff !important;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        /* Adjusting layout nodes for split structural screen */
+        .app-container {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+            background-color: #000000;
+        }
+
+        /* --- THE MODULE ROADMAP NAVIGATION (LEFT SIDE) --- */
+        sidebar {
+            width: 350px;
+            border-right: 2px solid #ffcc00; /* Matching Gold Accent Split */
+            display: flex;
+            flex-direction: column;
+            background-color: #0a0a0a; 
+        }
+
+        .sidebar-header {
+            padding: 20px;
+            border-bottom: 1px solid #222;
+        }
+
+        .course-chapters {
+            flex: 1;
+            overflow-y: auto;
+            list-style: none;
+            padding-left: 0;
+            margin: 0;
+        }
+
+        .chapter-link {
+            display: flex;
+            align-items: flex-start;
+            padding: 14px 20px;
+            border-bottom: 1px solid #111;
+            text-decoration: none;
+            color: #e0e0e0 !important; /* Silver text matching home paragraph styling */
+            font-size: 0.85rem;
+            font-weight: bold;
+            text-transform: uppercase;
+            transition: 0.2s;
+        }
+
+        .chapter-link:hover {
+            background-color: #1a1a1a;
+            color: #ffcc00 !important; /* Turns Gold on Hover matching main nav rules */
+        }
+
+        .chapter-link.active {
+            background-color: #000000;
+            border-left: 4px solid #ffcc00; /* Solid Gold indicator */
+            color: #ffcc00 !important;
+        }
+
+        .chapter-number {
+            margin-right: 10px;
+            color: #ffcc00;
+            min-width: 75px;
+        }
+
+        /* --- THE VIDEO COCKPIT (RIGHT SIDE) --- */
+        main {
+            flex: 1;
+            padding: 40px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .workspace-content {
+            width: 100%;
+            max-width: 900px; /* Kept tight to align with your content-section template */
+        }
+
+        /* Cinematic S3/CloudFront wrapper frame */
+        .video-vault {
+            position: relative;
+            width: 100%;
+            padding-bottom: 56.25%; /* Fixed aspect ratio prevents distortion */
+            background: #000;
+            border: 1px solid #ffcc00; /* Signature Gold Boarder */
+            border-radius: 8px;
+            overflow: hidden;
+            margin-bottom: 30px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.8);
+        }
+
+        .video-vault video {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+
+        /* --- RESPONSIVE ADAPTABILITY FOR MOBILE TECHS --- */
+        @media (max-width: 768px) {
+            body { overflow: auto; height: auto; }
+            .app-container { flex-direction: column; height: auto; overflow: visible; }
+            sidebar { width: 100%; height: 280px; border-right: none; border-bottom: 2px solid #ffcc00; }
+            main { padding: 20px 10px; }
+        }
+    </style>
+</head>
+<body>
+
+    <div class="lang-nav" style="background: #1a1a1a; padding: 10px 5%; text-align: right; font-size: 0.8rem; border-bottom: 1px solid #333;">
+        <a href="#" style="color: #ffcc00; text-decoration: none; margin-left: 15px; font-weight: bold;">EN</a>
+        <a href="#" style="color: #fff; text-decoration: none; margin-left: 15px;">ES</a>
+        <a href="#" style="color: #fff; text-decoration: none; margin-left: 15px;">PT</a>
+        <a href="#" style="color: #fff; text-decoration: none; margin-left: 15px;">FR</a>
+        <a href="#" style="color: #fff; text-decoration: none; margin-left: 15px;">DE</a>
+        <a href="#" style="color: #fff; text-decoration: none; margin-left: 15px;">IT</a>
+        <a href="#" style="color: #fff; text-decoration: none; margin-left: 15px;">PL</a>
+        <a href="#" style="color: #fff; text-decoration: none; margin-left: 15px;">SV</a>
+    </div>
+
+    <nav style="display: flex; justify-content: space-between; align-items: center; padding: 10px 5%; background: #000000; border-bottom: 2px solid #ffcc00;">
+        <div class="logo">
+            <img src="/fixyachips-shield-logo.png" alt="Fixyachips Shield Logo" style="height: 60px; width: auto; display: block;">
+        </div>
+        <div class="nav-links">
+            <a href="/index.html" style="margin-left: 20px; text-decoration: none; color: #ffcc00; font-weight: bold;">HOME</a>
+            <a href="#" style="margin-left: 20px; text-decoration: none; color: #fff; font-weight: bold;">ACADEMY PORTAL</a>
+        </div>
+    </nav>
+
+    <div class="app-container">
+        
+        <sidebar>
+            <div class="sidebar-header">
+                <h3 style="color: #ffcc00 !important; margin: 0; text-transform: uppercase; font-size: 1.1rem;">Training Academy Modules</h3>
+            </div>
+            <ul class="course-chapters">
+                <li><a href="#" class="chapter-link active"><span class="chapter-number">MODULE 01:</span> Classroom Instruction - No-Drill System Fundamentals</a></li>
+                <li><a href="#" class="chapter-link"><span class="chapter-number">MODULE 02:</span> Field Repair 1</a></li>
+                <li><a href="#" class="chapter-link"><span class="chapter-number">MODULE 03:</span> Field Repair 2</a></li>
+                <li><a href="#" class="chapter-link"><span class="chapter-number">MODULE 04:</span> Field Repair 3</a></li>
+                <li><a href="#" class="chapter-link"><span class="chapter-number">MODULE 05:</span> Field Repair 4</a></li>
+                <li><a href="#" class="chapter-link"><span class="chapter-number">MODULE 06:</span> Field Repair 5</a></li>
+                <li><a href="#" class="chapter-link"><span class="chapter-number">MODULE 07:</span> Field Repair 6</a></li>
+                <li><a href="#" class="chapter-link"><span class="chapter-number">MODULE 08:</span> Field Repair 7</a></li>
+                <li><a href="#" class="chapter-link"><span class="chapter-number">MODULE 09:</span> Field Repair 8</a></li>
+                <li><a href="#" class="chapter-link"><span class="chapter-number">MODULE 10:</span> Field Repair 9</a></li>
+                <li><a href="#" class="chapter-link"><span class="chapter-number">MODULE 11:</span> Field Repair 10</a></li>
+                <li><a href="#" class="chapter-link"><span class="chapter-number">MODULE 12:</span> Field Repair 11</a></li>
+                <li><a href="#" class="chapter-link"><span class="chapter-number">MODULE 13:</span> Field Repair 12</a></li>
+                <li><a href="#" class="chapter-link"><span class="chapter-number">MODULE 14:</span> Field Repair 13</a></li>
+                <li><a href="#" class="chapter-link"><span class="chapter-number">MODULE 15:</span> Field Repair 14</a></li>
+                <li><a href="#" class="chapter-link"><span class="chapter-number">MODULE 16:</span> Field Repair 15</a></li>
+                <li><a href="#" class="chapter-link"><span class="chapter-number">MODULE 17:</span> Long Crack Repair Part 1</a></li>
+                <li><a href="#" class="chapter-link"><span class="chapter-number">MODULE 18:</span> Long Crack Repair Part 2</a></li>
+            </ul>
+        </sidebar>
+
+        <main>
+            <div class="workspace-content">
+                
+                <div class="video-vault">
+                    <video id="academy-player" controls controlsList="nodownload" poster="/Fixyachips watermark.png">
+                        <source src="https://your-cloudfront-distribution.cloudfront.net/course/module1/stream.m3u8" type="application/x-mpegURL">
+                        Your browser does not support high-definition HTML5 video streaming.
+                    </video>
+                </div>
+
+                <div class="content-section" style="padding: 0; max-width: 100%;">
+                    <h2 style="color: #ffcc00 !important; font-size: 2.2rem; margin-top: 0;">Module 1: Classroom Instruction - Fundamentals of the No-Drill System</h2>
+                    <p style="color: #e0e0e0 !important; line-height: 1.6;">Welcome to the Fixyachips Global Solutions training academy. In this video-on-demand series, the first video teaches you the fundamentals of the Fixyachips No-Drill System. <strong>NO FLUFF, NO EXTRANEOUS filler</strong> to take up your time—only direct explanations of how this system works and how you implement the techniques.</p>
+                    
+                    <p style="color: #e0e0e0 !important; line-height: 1.6; margin-top: 15px;">Modules 2 through 18 cover actual, real stone damages being repaired so that you can see exactly how to put into action these trade secret techniques for you to practice.</p>
+
+                    <p style="color: #e0e0e0 !important; line-height: 1.6; margin-top: 15px;">Keep in mind: when I learned in 1982 from Mike Fine, he showed me twice how to do it, and I had to practice approximately a dozen times before I was fixing windshields for him that summer! <strong>IT SHOULDN'T TAKE YOU VERY LONG TO MASTER THE BASICS OF THESE TECHNIQUES</strong>, but your skill level will increase the more you do it!!</p>
+
+                    <p style="color: #e0e0e0 !important; line-height: 1.6; margin-top: 15px;">This course is designed to be a "hands on" VOD instructional course so that you can watch the content and then practice, then come back to the course to refresh your mind, and go practice again. You've been given 30 days of access to complete the course, which is way, way, way more time than you need. I say that because I learned over a period of 2 days! And I was repairing windshields for Mike that first week. You shouldn't need any more time than that to learn this amazing art and science.</p>
+                </div>
+
+            </div>
+        </main>
+
+    </div>
+
+</body>
+</html>

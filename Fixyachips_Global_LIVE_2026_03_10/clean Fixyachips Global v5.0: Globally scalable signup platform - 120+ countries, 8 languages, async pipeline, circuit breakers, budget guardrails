@@ -1,0 +1,1505 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Fixyachips Global v5.0: Globally scalable signup platform - 120+ countries, 8 languages, async pipeline, circuit breakers, budget guardrails'
+
+Parameters:
+  AdminEmail:
+    Type: String
+    Default: 'info@fixyachips.com'
+  DomainName:
+    Type: String
+    Default: 'fixyachips.com'
+  WWWDomainName:
+    Type: String
+    Default: 'www.fixyachips.com'
+  CertificateArn:
+    Type: String
+    Description: 'ACM Certificate ARN - MUST be in us-east-1'
+  AlertEmail:
+    Type: String
+    Default: 'info@fixyachips.com'
+    Description: 'Email to receive CloudWatch + Budget alerts'
+  OriginShieldRegion:
+    Type: String
+    Default: 'us-east-1'
+    AllowedValues:
+      - us-east-1
+      - us-east-2
+      - us-west-2
+      - ap-southeast-1
+      - ap-northeast-1
+      - eu-west-1
+      - eu-central-1
+      - sa-east-1
+  MonthlyBudgetUSD:
+    Type: Number
+    Default: 500
+    Description: 'Monthly budget threshold in USD - alerts at 50/80/100/120 percent'
+
+Resources:
+
+  # ========================================================================
+  # SNS TOPIC FOR ALL ALERTS
+  # ========================================================================
+  AlertTopic:
+    Type: 'AWS::SNS::Topic'
+    Properties:
+      TopicName: !Sub 'Fixyachips-Alerts-${AWS::StackName}'
+      DisplayName: 'Fixyachips Operational Alerts'
+      Subscription:
+        - Endpoint: !Ref AlertEmail
+          Protocol: email
+
+  # ========================================================================
+  # CLOUDFRONT OAC
+  # ========================================================================
+  EmpireOAC:
+    Type: 'AWS::CloudFront::OriginAccessControl'
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub 'Empire-OAC-${AWS::StackName}'
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # ========================================================================
+  # WAF — API GATEWAY (Regional)
+  # Tuned for global humans, hostile to bots
+  # ========================================================================
+  APIWAFProtection:
+    Type: 'AWS::WAFv2::WebACL'
+    Properties:
+      Name: !Sub 'FixyachipsAPIShield-${AWS::StackName}'
+      Scope: REGIONAL
+      DefaultAction: { Allow: {} }
+      VisibilityConfig:
+        SampledRequestsEnabled: true
+        CloudWatchMetricsEnabled: true
+        MetricName: FixyachipsAPIWAF
+      Rules:
+        # Priority 0: Cheap volumetric block FIRST
+        - Name: APIRateLimitPerIP
+          Priority: 0
+          Statement:
+            RateBasedStatement:
+              Limit: 50
+              EvaluationWindowSec: 300
+              AggregateKeyType: IP
+          Action: { Block: {} }
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: APIRateLimit
+        # Priority 1: Block oversized payloads (cheap pre-filter)
+        - Name: BlockOversizedBody
+          Priority: 1
+          Statement:
+            SizeConstraintStatement:
+              FieldToMatch:
+                Body:
+                  OversizeHandling: MATCH
+              ComparisonOperator: GT
+              Size: 2048
+              TextTransformations:
+                - Priority: 0
+                  Type: NONE
+          Action: { Block: {} }
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: OversizedBody
+        # Priority 2: SQLi (cheap, narrow inspection)
+        - Name: AWS-AWSManagedRulesSQLiRuleSet
+          Priority: 2
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesSQLiRuleSet
+          OverrideAction: { None: {} }
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: APISQLi
+        # Priority 3: Common rules
+        - Name: AWS-AWSManagedRulesCommonRuleSet
+          Priority: 3
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesCommonRuleSet
+              RuleActionOverrides:
+                # SizeRestrictions can false-positive global users with long names
+                - Name: SizeRestrictions_BODY
+                  ActionToUse:
+                    Count: {}
+          OverrideAction: { None: {} }
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: APICommonRules
+        # Priority 4: Bot Control with CHALLENGE not BLOCK
+        # Challenges legitimate suspicious requests (CAPTCHA-like silent JS)
+        # rather than killing real users behind weird ISPs
+        - Name: AWS-AWSManagedRulesBotControlRuleSet
+          Priority: 4
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesBotControlRuleSet
+              ManagedRuleGroupConfigs:
+                - AWSManagedRulesBotControlRuleSet:
+                    InspectionLevel: COMMON
+              RuleActionOverrides:
+                - Name: CategoryHttpLibrary
+                  ActionToUse:
+                    Challenge: {}
+                - Name: SignalNonBrowserUserAgent
+                  ActionToUse:
+                    Challenge: {}
+          OverrideAction: { None: {} }
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: APIBotControl
+
+  # ========================================================================
+  # WAF — CLOUDFRONT (Global)
+  # ========================================================================
+  WebBodyguard:
+    Type: 'AWS::WAFv2::WebACL'
+    Properties:
+      Name: !Sub 'FixyachipsShield-${AWS::StackName}'
+      Scope: CLOUDFRONT
+      DefaultAction: { Allow: {} }
+      VisibilityConfig:
+        SampledRequestsEnabled: true
+        CloudWatchMetricsEnabled: true
+        MetricName: FixyachipsWAF
+      Rules:
+        # Priority 0: Volumetric short-circuit
+        - Name: RateLimitRule
+          Priority: 0
+          Statement:
+            RateBasedStatement:
+              Limit: 5000
+              EvaluationWindowSec: 300
+              AggregateKeyType: IP
+          Action: { Block: {} }
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: RateLimit
+        - Name: AWS-AWSManagedRulesCommonRuleSet
+          Priority: 1
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesCommonRuleSet
+              RuleActionOverrides:
+                - Name: SizeRestrictions_BODY
+                  ActionToUse:
+                    Count: {}
+          OverrideAction: { None: {} }
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: CommonRules
+        - Name: AWS-AWSManagedRulesAmazonIpReputationList
+          Priority: 2
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesAmazonIpReputationList
+          OverrideAction: { None: {} }
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: IpReputation
+        - Name: AWS-AWSManagedRulesKnownBadInputsRuleSet
+          Priority: 3
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesKnownBadInputsRuleSet
+          OverrideAction: { None: {} }
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: KnownBadInputs
+
+  APIWAFAssociation:
+    Type: 'AWS::WAFv2::WebACLAssociation'
+    DependsOn:
+      - APIWAFProtection
+      - ApiDeployment
+    Properties:
+      ResourceArn: !Sub 'arn:aws:apigateway:${AWS::Region}::/restapis/${SignupAPI}/stages/prod'
+      WebACLArn: !GetAtt APIWAFProtection.Arn
+
+  # ========================================================================
+  # CLOUDFRONT FUNCTION (URL routing + minor security)
+  # ========================================================================
+  WebsiteRouterFunction:
+    Type: 'AWS::CloudFront::Function'
+    Properties:
+      Name: !Sub 'FixRouter-${AWS::StackName}'
+      AutoPublish: true
+      FunctionConfig:
+        Comment: 'Clean URLs and path traversal protection'
+        Runtime: 'cloudfront-js-1.0'
+      FunctionCode: |
+        function handler(event) {
+          var request = event.request;
+          var uri = request.uri;
+          if (/\.\.[\/$$/.test(uri)) {
+            return { statusCode: 403, statusDescription: 'Forbidden' };
+          }
+          if (uri.endsWith('/')) {
+            request.uri += 'index.html';
+          } else if (uri.lastIndexOf('.') < uri.lastIndexOf('/')) {
+            request.uri += '.html';
+          }
+          return request;
+        }
+
+  # ========================================================================
+  # S3 BUCKETS
+  # ========================================================================
+  StreamingVideoBucket:
+    Type: 'AWS::S3::Bucket'
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub 'fixyachips-platform-${AWS::AccountId}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: CleanOldVersions
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 90
+          - Id: AbortIncompleteMultipart
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ['*']
+            AllowedMethods: [GET, HEAD]
+            AllowedOrigins:
+              - !Sub 'https://${DomainName}'
+              - !Sub 'https://${WWWDomainName}'
+            MaxAge: 3600
+
+  CloudFrontLogsBucket:
+    Type: 'AWS::S3::Bucket'
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub 'fixyachips-cf-logs-${AWS::AccountId}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: true
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldLogs
+            Status: Enabled
+            ExpirationInDays: 90
+            Transitions:
+              - StorageClass: STANDARD_IA
+                TransitionInDays: 30
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerPreferred
+
+  BucketPolicy:
+    Type: 'AWS::S3::BucketPolicy'
+    Properties:
+      Bucket: !Ref StreamingVideoBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudFrontOACOnly
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: 's3:GetObject'
+            Resource: !Sub 'arn:aws:s3:::${StreamingVideoBucket}/*'
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${WebsiteDistribution}'
+          - Sid: DenyNonHTTPS
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !Sub 'arn:aws:s3:::${StreamingVideoBucket}'
+              - !Sub 'arn:aws:s3:::${StreamingVideoBucket}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+
+  # ========================================================================
+  # CLOUDFRONT CACHE / RESPONSE POLICIES
+  # ========================================================================
+  VODCachePolicy:
+    Type: 'AWS::CloudFront::CachePolicy'
+    Properties:
+      CachePolicyConfig:
+        Name: !Sub 'VODCachePolicy-${AWS::StackName}'
+        Comment: 'HLS/DASH/VOD video segments'
+        DefaultTTL: 86400
+        MaxTTL: 31536000
+        MinTTL: 0
+        ParametersInCacheKeyAndForwardedToOrigin:
+          EnableAcceptEncodingBrotli: false
+          EnableAcceptEncodingGzip: false
+          HeadersConfig: { HeaderBehavior: none }
+          QueryStringsConfig: { QueryStringBehavior: none }
+          CookiesConfig: { CookieBehavior: none }
+
+  WebCachePolicy:
+    Type: 'AWS::CloudFront::CachePolicy'
+    Properties:
+      CachePolicyConfig:
+        Name: !Sub 'WebCachePolicy-${AWS::StackName}'
+        Comment: 'HTML and static assets'
+        DefaultTTL: 3600
+        MaxTTL: 86400
+        MinTTL: 0
+        ParametersInCacheKeyAndForwardedToOrigin:
+          EnableAcceptEncodingBrotli: true
+          EnableAcceptEncodingGzip: true
+          HeadersConfig:
+            HeaderBehavior: whitelist
+            Headers:
+              - CloudFront-Viewer-Country
+              - Accept-Language
+          QueryStringsConfig: { QueryStringBehavior: none }
+          CookiesConfig: { CookieBehavior: none }
+
+  VODOriginRequestPolicy:
+    Type: 'AWS::CloudFront::OriginRequestPolicy'
+    Properties:
+      OriginRequestPolicyConfig:
+        Name: !Sub 'VODOriginRequestPolicy-${AWS::StackName}'
+        Comment: 'VOD origin requests'
+        HeadersConfig: { HeaderBehavior: none }
+        QueryStringsConfig: { QueryStringBehavior: none }
+        CookiesConfig: { CookieBehavior: none }
+
+  GlobalResponseHeadersPolicy:
+    Type: 'AWS::CloudFront::ResponseHeadersPolicy'
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: !Sub 'GlobalResponseHeadersPolicy-${AWS::StackName}'
+        Comment: 'Security headers + CORS for all responses'
+        SecurityHeadersConfig:
+          FrameOptions: { FrameOption: DENY, Override: true }
+          ContentTypeOptions: { Override: true }
+          StrictTransportSecurity:
+            AccessControlMaxAgeSec: 31536000
+            IncludeSubdomains: true
+            Preload: true
+            Override: true
+          ReferrerPolicy:
+            ReferrerPolicy: strict-origin-when-cross-origin
+            Override: true
+          ContentSecurityPolicy:
+            ContentSecurityPolicy: !Sub "default-src 'self' https://${DomainName} https://${WWWDomainName}; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; media-src 'self' https://${DomainName} https://${WWWDomainName}; connect-src 'self' https://*.execute-api.${AWS::Region}.amazonaws.com https://cognito-idp.${AWS::Region}.amazonaws.com; font-src 'self' data:;"
+            Override: true
+          XSSProtection:
+            ModeBlock: true
+            Protection: true
+            Override: true
+        CorsConfig:
+          AccessControlAllowCredentials: false
+          AccessControlAllowHeaders:
+            Items: ['Content-Type', 'Authorization', 'Range']
+          AccessControlAllowMethods:
+            Items: [GET, HEAD, OPTIONS]
+          AccessControlAllowOrigins:
+            Items:
+              - !Sub 'https://${DomainName}'
+              - !Sub 'https://${WWWDomainName}'
+          AccessControlMaxAgeSec: 3600
+          OriginOverride: true
+
+  # ========================================================================
+  # CLOUDFRONT DISTRIBUTION (Global, all 8 languages, all 120 countries)
+  # ========================================================================
+  WebsiteDistribution:
+    Type: 'AWS::CloudFront::Distribution'
+    DependsOn:
+      - EmpireOAC
+      - WebBodyguard
+      - VODCachePolicy
+      - WebCachePolicy
+      - VODOriginRequestPolicy
+      - GlobalResponseHeadersPolicy
+      - CloudFrontLogsBucket
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        PriceClass: PriceClass_All
+        DefaultRootObject: index.html
+        Comment: !Sub 'Fixyachips Global - 120+ countries - ${AWS::StackName}'
+        Aliases:
+          - !Ref DomainName
+          - !Ref WWWDomainName
+        ViewerCertificate:
+          AcmCertificateArn: !Ref CertificateArn
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2021
+        WebACLId: !GetAtt WebBodyguard.Arn
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        Logging:
+          Bucket: !GetAtt CloudFrontLogsBucket.DomainName
+          Prefix: 'cloudfront-logs/'
+          IncludeCookies: false
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt StreamingVideoBucket.RegionalDomainName
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+            OriginAccessControlId: !GetAtt EmpireOAC.Id
+            OriginShield:
+              Enabled: true
+              OriginShieldRegion: !Ref OriginShieldRegion
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          CachePolicyId: !Ref WebCachePolicy
+          ResponseHeadersPolicyId: !Ref GlobalResponseHeadersPolicy
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD, OPTIONS]
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+        CacheBehaviors:
+          - PathPattern: '/hls/*'
+            TargetOriginId: S3Origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: false
+            CachePolicyId: !Ref VODCachePolicy
+            OriginRequestPolicyId: !Ref VODOriginRequestPolicy
+            ResponseHeadersPolicyId: !Ref GlobalResponseHeadersPolicy
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD]
+          - PathPattern: '/dash/*'
+            TargetOriginId: S3Origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: false
+            CachePolicyId: !Ref VODCachePolicy
+            OriginRequestPolicyId: !Ref VODOriginRequestPolicy
+            ResponseHeadersPolicyId: !Ref GlobalResponseHeadersPolicy
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD]
+          - PathPattern: '/vod/*'
+            TargetOriginId: S3Origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: false
+            CachePolicyId: !Ref VODCachePolicy
+            OriginRequestPolicyId: !Ref VODOriginRequestPolicy
+            ResponseHeadersPolicyId: !Ref GlobalResponseHeadersPolicy
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD]
+          # All language paths share one behavior pattern via the default —
+          # but we keep explicit ones for the function association
+          - PathPattern: '/es/*'
+            TargetOriginId: S3Origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            CachePolicyId: !Ref WebCachePolicy
+            ResponseHeadersPolicyId: !Ref GlobalResponseHeadersPolicy
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            FunctionAssociations:
+              - EventType: viewer-request
+                FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+          - PathPattern: '/pt/*'
+            TargetOriginId: S3Origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            CachePolicyId: !Ref WebCachePolicy
+            ResponseHeadersPolicyId: !Ref GlobalResponseHeadersPolicy
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            FunctionAssociations:
+              - EventType: viewer-request
+                FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+          - PathPattern: '/fr/*'
+            TargetOriginId: S3Origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            CachePolicyId: !Ref WebCachePolicy
+            ResponseHeadersPolicyId: !Ref GlobalResponseHeadersPolicy
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            FunctionAssociations:
+              - EventType: viewer-request
+                FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+          - PathPattern: '/it/*'
+            TargetOriginId: S3Origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            CachePolicyId: !Ref WebCachePolicy
+            ResponseHeadersPolicyId: !Ref GlobalResponseHeadersPolicy
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            FunctionAssociations:
+              - EventType: viewer-request
+                FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+          - PathPattern: '/de/*'
+            TargetOriginId: S3Origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            CachePolicyId: !Ref WebCachePolicy
+            ResponseHeadersPolicyId: !Ref GlobalResponseHeadersPolicy
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            FunctionAssociations:
+              - EventType: viewer-request
+                FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+          - PathPattern: '/pl/*'
+            TargetOriginId: S3Origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            CachePolicyId: !Ref WebCachePolicy
+            ResponseHeadersPolicyId: !Ref GlobalResponseHeadersPolicy
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            FunctionAssociations:
+              - EventType: viewer-request
+                FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+          - PathPattern: '/sv/*'
+            TargetOriginId: S3Origin
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            CachePolicyId: !Ref WebCachePolicy
+            ResponseHeadersPolicyId: !Ref GlobalResponseHeadersPolicy
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            FunctionAssociations:
+              - EventType: viewer-request
+                FunctionARN: !GetAtt WebsiteRouterFunction.FunctionMetadata.FunctionARN
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: '/index.html'
+            ErrorCachingMinTTL: 10
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: '/index.html'
+            ErrorCachingMinTTL: 10
+          - ErrorCode: 500
+            ResponseCode: 503
+            ResponsePagePath: '/en/error.html'
+            ErrorCachingMinTTL: 5
+        Restrictions:
+          GeoRestriction:
+            RestrictionType: none
+
+  # ========================================================================
+  # DYNAMODB — STUDENTS (main table, retained)
+  # ========================================================================
+  StudentTable:
+    Type: 'AWS::DynamoDB::Table'
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub 'FixyachipsStudents-${AWS::StackName}'
+      AttributeDefinitions:
+        - AttributeName: StudentID
+          AttributeType: S
+        - AttributeName: Email
+          AttributeType: S
+      KeySchema:
+        - AttributeName: StudentID
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: EmailIndex
+          KeySchema:
+            - AttributeName: Email
+              KeyType: HASH
+          Projection:
+            ProjectionType: KEYS_ONLY
+      BillingMode: PAY_PER_REQUEST
+      SSESpecification:
+        SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+  # ========================================================================
+  # DYNAMODB — IP THROTTLE (retained for forensics)
+  # ========================================================================
+  SignupThrottleTable:
+    Type: 'AWS::DynamoDB::Table'
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub 'FixyachipsThrottle-${AWS::StackName}'
+      AttributeDefinitions:
+        - AttributeName: ThrottleKey
+          AttributeType: S
+      KeySchema:
+        - AttributeName: ThrottleKey
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+      SSESpecification:
+        SSEEnabled: true
+      TimeToLiveSpecification:
+        AttributeName: TTL
+        Enabled: true
+
+  # ========================================================================
+  # SQS — EMAIL QUEUE + DLQ (decouples Lambda from SES)
+  # ========================================================================
+  EmailDLQ:
+    Type: 'AWS::SQS::Queue'
+    Properties:
+      QueueName: !Sub 'FixyachipsEmailDLQ-${AWS::StackName}'
+      MessageRetentionPeriod: 1209600  # 14 days
+      KmsMasterKeyId: 'alias/aws/sqs'
+
+  EmailQueue:
+    Type: 'AWS::SQS::Queue'
+    Properties:
+      QueueName: !Sub 'FixyachipsEmailQueue-${AWS::StackName}'
+      VisibilityTimeout: 60
+      MessageRetentionPeriod: 345600  # 4 days
+      KmsMasterKeyId: 'alias/aws/sqs'
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt EmailDLQ.Arn
+        maxReceiveCount: 3
+
+  # ========================================================================
+  # IAM — SIGNUP LAMBDA (least-privilege)
+  # ========================================================================
+  SignupWorkerRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Sub 'FixyachipsSignupRole-${AWS::StackName}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: SignupWorkerLeastPriv
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'dynamodb:PutItem'
+                  - 'dynamodb:Query'
+                Resource:
+                  - !GetAtt StudentTable.Arn
+                  - !Sub '${StudentTable.Arn}/index/EmailIndex'
+              - Effect: Allow
+                Action:
+                  - 'dynamodb:UpdateItem'
+                  - 'dynamodb:GetItem'
+                Resource:
+                  - !GetAtt SignupThrottleTable.Arn
+              - Effect: Allow
+                Action:
+                  - 'sqs:SendMessage'
+                Resource:
+                  - !GetAtt EmailQueue.Arn
+
+  # ========================================================================
+  # IAM — EMAIL WORKER LAMBDA (least-privilege)
+  # ========================================================================
+  EmailWorkerRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Sub 'FixyachipsEmailRole-${AWS::StackName}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: EmailWorkerLeastPriv
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'sqs:ReceiveMessage'
+                  - 'sqs:DeleteMessage'
+                  - 'sqs:GetQueueAttributes'
+                Resource: !GetAtt EmailQueue.Arn
+              - Effect: Allow
+                Action:
+                  - 'ses:SendEmail'
+                  - 'ses:SendRawEmail'
+                Resource:
+                  - !Sub 'arn:aws:ses:${AWS::Region}:${AWS::AccountId}:identity/${AdminEmail}'
+                  - !Sub 'arn:aws:ses:${AWS::Region}:${AWS::AccountId}:identity/${DomainName}'
+
+  # ========================================================================
+  # IAM — COGNITO PRESIGNUP TRIGGER
+  # ========================================================================
+  CognitoTriggerRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Sub 'FixyachipsCognitoRole-${AWS::StackName}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+
+  # ========================================================================
+  # SIGNUP LAMBDA — fast, atomic, no SES (queues to SQS)
+  # ========================================================================
+  SignupWorker:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      FunctionName: !Sub 'FixyachipsSignupWorker-${AWS::StackName}'
+      Handler: index.lambda_handler
+      Runtime: python3.12
+      Role: !GetAtt SignupWorkerRole.Arn
+      Timeout: 10
+      MemorySize: 256
+      ReservedConcurrentExecutions: 500
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref StudentTable
+          THROTTLE_TABLE_NAME: !Ref SignupThrottleTable
+          EMAIL_QUEUE_URL: !Ref EmailQueue
+          ALLOWED_ORIGINS: !Sub 'https://${DomainName},https://${WWWDomainName}'
+          MAX_BODY_SIZE: '2048'
+          MAX_SIGNUPS_PER_IP: '5'
+          IP_WINDOW_SECONDS: '3600'
+          MAX_SIGNUPS_PER_COUNTRY: '5000'
+          COUNTRY_WINDOW_SECONDS: '3600'
+      Code:
+        ZipFile: |
+          import json, boto3, uuid, os, re, time
+          from botocore.exceptions import ClientError
+
+          dynamodb = boto3.resource('dynamodb')
+          sqs = boto3.client('sqs')
+          table = dynamodb.Table(os.environ['TABLE_NAME'])
+          throttle_table = dynamodb.Table(os.environ['THROTTLE_TABLE_NAME'])
+          EMAIL_QUEUE_URL = os.environ['EMAIL_QUEUE_URL']
+          ALLOWED_ORIGINS = set(os.environ.get('ALLOWED_ORIGINS', '').split(','))
+          MAX_SIGNUPS_PER_IP = int(os.environ.get('MAX_SIGNUPS_PER_IP', '5'))
+          IP_WINDOW_SECONDS = int(os.environ.get('IP_WINDOW_SECONDS', '3600'))
+          MAX_SIGNUPS_PER_COUNTRY = int(os.environ.get('MAX_SIGNUPS_PER_COUNTRY', '5000'))
+          COUNTRY_WINDOW_SECONDS = int(os.environ.get('COUNTRY_WINDOW_SECONDS', '3600'))
+          MAX_BODY_SIZE = int(os.environ.get('MAX_BODY_SIZE', '2048'))
+
+          EMAIL_RE = re.compile(r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$')
+
+          def is_valid_email(email):
+              return bool(EMAIL_RE.match(email)) and len(email) <= 254
+
+          def sanitize(value, max_length=200):
+              if not isinstance(value, str):
+                  return ''
+              return re.sub(r'[<>"';$$', '', value.strip())[:max_length]
+
+          def cors_headers(origin):
+              allow = origin if origin in ALLOWED_ORIGINS else next(iter(ALLOWED_ORIGINS), '')
+              return {
+                  'Access-Control-Allow-Origin': allow,
+                  'Access-Control-Allow-Headers': 'Content-Type',
+                  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+                  'Vary': 'Origin',
+                  'Content-Type': 'application/json'
+              }
+
+          def atomic_throttle(key, max_count, window_seconds):
+              """
+              Atomic conditional update. Returns True if allowed, False if throttled.
+              """
+              now = int(time.time())
+              ttl = now + window_seconds
+              try:
+                  throttle_table.update_item(
+                      Key={'ThrottleKey': key},
+                      UpdateExpression='ADD #c :inc SET #t = if_not_exists(#t, :ttl)',
+                      ConditionExpression='attribute_not_exists(#c) OR #c < :max',
+                      ExpressionAttributeNames={'#c': 'Count', '#t': 'TTL'},
+                      ExpressionAttributeValues={
+                          ':inc': 1,
+                          ':ttl': ttl,
+                          ':max': max_count
+                      }
+                  )
+                  return True
+              except ClientError as e:
+                  if e.response['Error']['Code'] == 'ConditionalCheckFailedException':
+                      return False
+                  print('Throttle error: ' + str(e))
+                  return True  # fail open on infra errors — don't block users
+
+          def email_already_registered(email):
+              try:
+                  response = table.query(
+                      IndexName='EmailIndex',
+                      KeyConditionExpression='Email = :email',
+                      ExpressionAttributeValues={':email': email},
+                      Limit=1
+                  )
+                  return response.get('Count', 0) > 0
+              except Exception as e:
+                  print('Email check error: ' + str(e))
+                  return False
+
+          def queue_emails(name, email, industry, source_ip, country):
+              try:
+                  sqs.send_message(
+                      QueueUrl=EMAIL_QUEUE_URL,
+                      MessageBody=json.dumps({
+                          'type': 'welcome',
+                          'to': email,
+                          'name': name
+                      })
+                  )
+                  sqs.send_message(
+                      QueueUrl=EMAIL_QUEUE_URL,
+                      MessageBody=json.dumps({
+                          'type': 'admin_notify',
+                          'name': name,
+                          'email': email,
+                          'industry': industry,
+                          'ip': source_ip,
+                          'country': country
+                      })
+                  )
+              except Exception as e:
+                  print('SQS enqueue error: ' + str(e))
+
+          def lambda_handler(event, context):
+              headers_in = event.get('headers') or {}
+              origin = headers_in.get('origin') or headers_in.get('Origin') or ''
+              headers = cors_headers(origin)
+
+              if event.get('httpMethod') == 'OPTIONS':
+                  return {'statusCode': 200, 'headers': headers, 'body': ''}
+
+              try:
+                  raw_body = event.get('body') or ''
+                  if len(raw_body) > MAX_BODY_SIZE:
+                      return {'statusCode': 413, 'headers': headers,
+                              'body': json.dumps({'error': 'Request too large'})}
+
+                  ctx = event.get('requestContext', {})
+                  source_ip = ctx.get('identity', {}).get('sourceIp', 'unknown')
+                  country = headers_in.get('CloudFront-Viewer-Country') or \
+                            headers_in.get('cloudfront-viewer-country') or 'XX'
+
+                  # Per-IP throttle (5 / hour)
+                  if not atomic_throttle('IP#' + source_ip, MAX_SIGNUPS_PER_IP, IP_WINDOW_SECONDS):
+                      return {'statusCode': 429, 'headers': headers,
+                              'body': json.dumps({'error': 'Too many requests from this IP. Please try again later.'})}
+
+                  # Per-country soft cap (5000 / hour) — protects against single-country flood
+                  if not atomic_throttle('CC#' + country, MAX_SIGNUPS_PER_COUNTRY, COUNTRY_WINDOW_SECONDS):
+                      return {'statusCode': 503, 'headers': headers,
+                              'body': json.dumps({'error': 'Service is temporarily at capacity in your region. Please try again in an hour.'})}
+
+                  body = json.loads(raw_body or '{}')
+                  email = sanitize(body.get('email', '').lower())
+                  name = sanitize(body.get('name', ''))
+                  industry = sanitize(body.get('industry', 'unknown'))
+                  source = sanitize(body.get('source', 'website'))
+
+                  if not email or not name:
+                      return {'statusCode': 400, 'headers': headers,
+                              'body': json.dumps({'error': 'Name and email are required'})}
+                  if not is_valid_email(email):
+                      return {'statusCode': 400, 'headers': headers,
+                              'body': json.dumps({'error': 'Invalid email address'})}
+
+                  # Idempotent: if already registered, return success silently
+                  if email_already_registered(email):
+                      return {'statusCode': 200, 'headers': headers,
+                              'body': json.dumps({'status': 'success',
+                                                  'message': 'Welcome to the revolution!'})}
+
+                  table.put_item(Item={
+                      'StudentID': str(uuid.uuid4()),
+                      'Name': name,
+                      'Email': email,
+                      'Status': 'WAITLIST',
+                      'Source': source,
+                      'Industry': industry,
+                      'Country': country,
+                      'SignupTime': int(time.time())
+                  })
+
+                  queue_emails(name, email, industry, source_ip, country)
+
+                  return {'statusCode': 200, 'headers': headers,
+                          'body': json.dumps({'status': 'success',
+                                              'message': 'Welcome to the revolution!'})}
+              except json.JSONDecodeError:
+                  return {'statusCode': 400, 'headers': headers,
+                          'body': json.dumps({'error': 'Invalid JSON'})}
+              except Exception as e:
+                  print('FATAL: ' + str(e))
+                  return {'statusCode': 500, 'headers': headers,
+                          'body': json.dumps({'error': 'Signup failed. Please try again.'})}
+
+  SignupWorkerLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/FixyachipsSignupWorker-${AWS::StackName}'
+      RetentionInDays: 30
+
+  # ========================================================================
+  # EMAIL WORKER LAMBDA — drains SQS, sends SES, retries via DLQ
+  # ========================================================================
+  EmailWorker:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      FunctionName: !Sub 'FixyachipsEmailWorker-${AWS::StackName}'
+      Handler: index.lambda_handler
+      Runtime: python3.12
+      Role: !GetAtt EmailWorkerRole.Arn
+      Timeout: 30
+      MemorySize: 256
+      ReservedConcurrentExecutions: 50
+      Environment:
+        Variables:
+          ADMIN_EMAIL: !Ref AdminEmail
+          FROM_EMAIL: !Ref AdminEmail
+      Code:
+        ZipFile: |
+          import json, boto3, os
+          ses = boto3.client('ses')
+          ADMIN_EMAIL = os.environ['ADMIN_EMAIL']
+          FROM_EMAIL = os.environ['FROM_EMAIL']
+
+          def send_welcome(to_email, name):
+              ses.send_email(
+                  Source=FROM_EMAIL,
+                  Destination={'ToAddresses': [to_email]},
+                  Message={
+                      'Subject': {'Data': 'Welcome to the No-Drill Revolution - Fixyachips Academy'},
+                      'Body': {'Text': {'Data':
+                          'Hello ' + name + ',\n\n'
+                          'You are now on the waitlist for Fixyachips Global Academy.\n\n'
+                          'Joshua Cane\nFounder, Fixyachips Global Academy'}}
+                  }
+              )
+
+          def send_admin(name, email, industry, ip, country):
+              ses.send_email(
+                  Source=FROM_EMAIL,
+                  Destination={'ToAddresses': [ADMIN_EMAIL]},
+                  Message={
+                      'Subject': {'Data': 'New Waitlist Signup: ' + name},
+                      'Body': {'Text': {'Data':
+                          'New signup:\nName: ' + name +
+                          '\nEmail: ' + email +
+                          '\nIndustry: ' + industry +
+                          '\nCountry: ' + country +
+                          '\nIP: ' + ip}}
+                  }
+              )
+
+          def lambda_handler(event, context):
+              failures = []
+              for record in event.get('Records', []):
+                  try:
+                      msg = json.loads(record['body'])
+                      t = msg.get('type')
+                      if t == 'welcome':
+                          send_welcome(msg['to'], msg['name'])
+                      elif t == 'admin_notify':
+                          send_admin(msg['name'], msg['email'], msg['industry'],
+                                     msg['ip'], msg.get('country', 'XX'))
+                  except Exception as e:
+                      print('Email send error: ' + str(e))
+                      failures.append({'itemIdentifier': record['messageId']})
+              return {'batchItemFailures': failures}
+
+  EmailWorkerLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/FixyachipsEmailWorker-${AWS::StackName}'
+      RetentionInDays: 30
+
+  EmailWorkerEventSource:
+    Type: 'AWS::Lambda::EventSourceMapping'
+    Properties:
+      EventSourceArn: !GetAtt EmailQueue.Arn
+      FunctionName: !Ref EmailWorker
+      BatchSize: 10
+      MaximumBatchingWindowInSeconds: 5
+      FunctionResponseTypes:
+        - ReportBatchItemFailures
+      ScalingConfig:
+        MaximumConcurrency: 50
+
+  # ========================================================================
+  # API GATEWAY
+  # ========================================================================
+  SignupAPI:
+    Type: 'AWS::ApiGateway::RestApi'
+    Properties:
+      Name: !Sub 'FixyachipsAPI-${AWS::StackName}'
+      Description: 'Fixyachips Signup API'
+      EndpointConfiguration:
+        Types: [REGIONAL]
+
+  ApiResource:
+    Type: 'AWS::ApiGateway::Resource'
+    Properties:
+      ParentId: !GetAtt SignupAPI.RootResourceId
+      PathPart: 'signup'
+      RestApiId: !Ref SignupAPI
+
+  ApiMethod:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: POST
+      ResourceId: !Ref ApiResource
+      RestApiId: !Ref SignupAPI
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${SignupWorker.Arn}/invocations'
+
+  # OPTIONS via MOCK = no Lambda cost on preflight
+  ApiOptionsMethod:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: OPTIONS
+      ResourceId: !Ref ApiResource
+      RestApiId: !Ref SignupAPI
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: !Sub "'https://${DomainName}'"
+              method.response.header.Access-Control-Max-Age: "'3600'"
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+            method.response.header.Access-Control-Max-Age: true
+
+  ApiDeployment:
+    Type: 'AWS::ApiGateway::Deployment'
+    DependsOn:
+      - ApiMethod
+      - ApiOptionsMethod
+    Properties:
+      RestApiId: !Ref SignupAPI
+
+  ApiStage:
+    Type: 'AWS::ApiGateway::Stage'
+    Properties:
+      StageName: prod
+      RestApiId: !Ref SignupAPI
+      DeploymentId: !Ref ApiDeployment
+      MethodSettings:
+        - ResourcePath: '/*'
+          HttpMethod: '*'
+          # Generous account-stage caps; per-IP enforced by WAF + Lambda
+          ThrottlingBurstLimit: 2000
+          ThrottlingRateLimit: 1000
+          LoggingLevel: ERROR
+          DataTraceEnabled: false
+          MetricsEnabled: true
+
+  LambdaPermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref SignupWorker
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${SignupAPI}/*'
+
+  # ========================================================================
+  # COGNITO — PreSignUp Lambda blocks bot-pattern emails
+  # ========================================================================
+  CognitoPreSignUpFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      FunctionName: !Sub 'FixyachipsCognitoPreSignUp-${AWS::StackName}'
+      Handler: index.lambda_handler
+      Runtime: python3.12
+      Role: !GetAtt CognitoTriggerRole.Arn
+      Timeout: 5
+      MemorySize: 128
+      ReservedConcurrentExecutions: 100
+      Code:
+        ZipFile: |
+          import re
+          DISPOSABLE_DOMAINS = {
+              'mailinator.com', 'guerrillamail.com', 'tempmail.com',
+              '10minutemail.com', 'throwaway.email', 'yopmail.com',
+              'trashmail.com', 'sharklasers.com', 'getnada.com'
+          }
+          PLUS_BOT_RE = re.compile(r'\+\d{4,}@')
+          def lambda_handler(event, context):
+              email = (event.get('request', {}).get('userAttributes', {}).get('email') or '').lower()
+              if not email:
+                  raise Exception('Email required')
+              domain = email.split('@')[-1] if '@' in email else ''
+              if domain in DISPOSABLE_DOMAINS:
+                  raise Exception('Please use a permanent email address')
+              if PLUS_BOT_RE.search(email):
+                  raise Exception('Invalid email format')
+              return event
+
+  CognitoPreSignUpLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/FixyachipsCognitoPreSignUp-${AWS::StackName}'
+      RetentionInDays: 30
+
+  CognitoInvokePermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref CognitoPreSignUpFunction
+      Principal: cognito-idp.amazonaws.com
+      SourceArn: !GetAtt FixyachipsUserPool.Arn
+
+  FixyachipsUserPool:
+    Type: 'AWS::Cognito::UserPool'
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      UserPoolName: !Sub 'Fixyachips_Global_Users-${AWS::StackName}'
+      UsernameAttributes: [email]
+      AutoVerifiedAttributes: [email]
+      MfaConfiguration: OPTIONAL
+      EnabledMfas:
+        - SOFTWARE_TOKEN_MFA
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 10
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+          RequireUppercase: true
+          TemporaryPasswordValidityDays: 7
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+      UserPoolAddOns:
+        AdvancedSecurityMode: ENFORCED
+      LambdaConfig:
+        PreSignUp: !GetAtt CognitoPreSignUpFunction.Arn
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Mutable: true
+          Required: true
+        - Name: veteran_status
+          AttributeDataType: String
+          Mutable: true
+        - Name: industry_segment
+          AttributeDataType: String
+          Mutable: true
+
+  FixyachipsUserPoolClient:
+    Type: 'AWS::Cognito::UserPoolClient'
+    Properties:
+      ClientName: Fixyachips_Web_Portal
+      UserPoolId: !Ref FixyachipsUserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      AccessTokenValidity: 1
+      IdTokenValidity: 1
+      RefreshTokenValidity: 30
+      TokenValidityUnits:
+        AccessToken: hours
+        IdToken: hours
+        RefreshToken: days
+      PreventUserExistenceErrors: ENABLED
+
+  # ========================================================================
+  # CLOUDWATCH ALARMS — full coverage, alert-only (no auto-destruct)
+  # ========================================================================
+  AlarmSignupLambdaErrors:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: !Sub 'Fixyachips-SignupLambdaErrors-${AWS::StackName}'
+      AlarmDescription: 'Signup Lambda error rate spike'
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref SignupWorker
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: 50
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions: [!Ref AlertTopic]
+      TreatMissingData: notBreaching
+
+  AlarmSignupLambdaThrottles:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: !Sub 'Fixyachips-SignupLambdaThrottles-${AWS::StackName}'
+      AlarmDescription: 'Signup Lambda hitting concurrency cap — increase if legit traffic'
+      Namespace: AWS/Lambda
+      MetricName: Throttles
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref SignupWorker
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 10
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions: [!Ref AlertTopic]
+      TreatMissingData: notBreaching
+
+  AlarmSignupVolume:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: !Sub 'Fixyachips-SignupVolume-${AWS::StackName}'
+      AlarmDescription: 'Sustained signup volume spike — review for legit launch vs attack'
+      Namespace: AWS/Lambda
+      MetricName: Invocations
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref SignupWorker
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 30000
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions: [!Ref AlertTopic]
+      TreatMissingData: notBreaching
+
+  AlarmEmailDLQDepth:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: !Sub 'Fixyachips-EmailDLQDepth-${AWS::StackName}'
+      AlarmDescription: 'Emails are failing — DLQ has messages'
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt EmailDLQ.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions: [!Ref AlertTopic]
+      TreatMissingData: notBreaching
+
+  AlarmEmailQueueBacklog:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: !Sub 'Fixyachips-EmailQueueBacklog-${AWS::StackName}'
+      AlarmDescription: 'Email queue backing up — SES throttle or quota?'
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt EmailQueue.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 10000
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions: [!Ref AlertTopic]
+      TreatMissingData: notBreaching
+
+  AlarmDynamoDBWrites:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: !Sub 'Fixyachips-DynamoWriteSpike-${AWS::StackName}'
+      AlarmDescription: 'DynamoDB write spike — verify legitimate'
+      Namespace: AWS/DynamoDB
+      MetricName: ConsumedWriteCapacityUnits
+      Dimensions:
+        - Name: TableName
+          Value: !Ref StudentTable
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 100000
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions: [!Ref AlertTopic]
+      TreatMissingData: notBreaching
+
+  AlarmAPI4XX:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: !Sub 'Fixyachips-API4XXRate-${AWS::StackName}'
+      AlarmDescription: 'High 4XX rate on API — possible attack or bad client'
+      Namespace: AWS/ApiGateway
+      MetricName: 4XXError
+      Dimensions:
+        - Name: ApiName
+          Value: !Sub 'FixyachipsAPI-${AWS::StackName}'
+        - Name: Stage
+          Value: prod
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 5000
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions: [!Ref AlertTopic]
+      TreatMissingData: notBreaching
+
+  AlarmWAFBlocks:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: !Sub 'Fixyachips-WAFBlockSpike-${AWS::StackName}'
+      AlarmDescription: 'WAF blocking high volume — confirms attack in progress'
+      Namespace: AWS/WAFV2
+      MetricName: BlockedRequests
+      Dimensions:
+        - Name: WebACL
+          Value: !Sub 'FixyachipsAPIShield-${AWS::StackName}'
+        - Name: Region
+          Value: !Ref AWS::Region
+        - Name: Rule
+          Value: ALL
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 10000
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions: [!Ref AlertTopic]
+      TreatMissingData: notBreaching
+
+  # ========================================================================
+  # AWS BUDGETS — multi-tier alerts, no auto-destroy
+  # ========================================================================
+  MonthlyBudget:
+    Type: 'AWS::Budgets::Budget'
+    Properties:
+      Budget:
+        BudgetName: !Sub 'Fixyachips-Monthly-${AWS::StackName}'
+        BudgetLimit:
+          Amount: !Ref MonthlyBudgetUSD
+          Unit: USD
+        TimeUnit: MONTHLY
+        BudgetType: COST
+      NotificationsWithSubscribers:
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 50
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref AlertEmail
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 80
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref AlertEmail
+        - Notification:
+            NotificationType: FORECASTED
+            ComparisonOperator: GREATER_THAN
+            Threshold: 100
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref AlertEmail
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 120
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref AlertEmail
+
+  # Daily anomaly budget — triggers if a single day spends weirdly
+  DailyAnomalyBudget:
+    Type: 'AWS::Budgets::Budget'
+    Properties:
+      Budget:
+        BudgetName: !Sub 'Fixyachips-DailyAnomaly-${AWS::StackName}'
+        BudgetLimit:
+          Amount: !Ref MonthlyBudgetUSD
+          Unit: USD
+        TimeUnit: DAILY
+        BudgetType: COST
+      NotificationsWithSubscribers:
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 25
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref AlertEmail
+
+Outputs:
+  WebsiteURL:
+    Value: !Sub 'https://${DomainName}'
+  CloudFrontDomain:
+    Value: !GetAtt WebsiteDistribution.DomainName
+  SignupApiUrl:
+    Value: !Sub 'https://${SignupAPI}.execute-api.${AWS::Region}.amazonaws.com/prod/signup'
+  S3Bucket:
+    Value: !Ref StreamingVideoBucket
+  LogsBucket:
+    Value: !Ref CloudFrontLogsBucket
+  UserPoolId:
+    Value: !Ref FixyachipsUserPool
+  UserPoolClientId:
+    Value: !Ref FixyachipsUserPoolClient
+  EmailQueueUrl:
+    Value: !Ref EmailQueue
+  EmailDLQUrl:
+    Value: !Ref EmailDLQ
+  AlertTopicArn:
+    Value: !Ref AlertTopic
+  DistributionId:
+    Value: !Ref WebsiteDistribution

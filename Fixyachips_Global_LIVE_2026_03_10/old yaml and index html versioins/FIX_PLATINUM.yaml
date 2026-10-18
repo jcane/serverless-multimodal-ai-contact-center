@@ -1,0 +1,78 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Fixyachips Global v3.6.7: FINAL ALIGNMENT'
+
+Resources:
+  # 1. COGNITO (Matched to original v3.4)
+  FixyachipsUserPool:
+    Type: 'AWS::Cognito::UserPool'
+    Properties:
+      UserPoolName: !Sub 'Fixyachips_Global_Users-${AWS::StackName}'
+      UsernameAttributes: [email]
+      AutoVerifiedAttributes: [email]
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Mutable: true
+          Required: true
+        - Name: veteran_status
+          AttributeDataType: String
+          Mutable: true
+        - Name: industry_segment
+          AttributeDataType: String
+          Mutable: true
+
+  # 2. STORAGE (Matched to original names to prevent deletion)
+  StreamingVideoBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Sub 'fixyachips-vod-platform-${AWS::AccountId}'
+
+  # 3. THE NEW EDGE (Clean names, these will be "Add")
+  GlobalDistribution:
+    Type: 'AWS::CloudFront::Distribution'
+    Properties:
+      DistributionConfig:
+        PriceClass: PriceClass_100
+        Enabled: true
+        DefaultRootObject: index.html
+        Origins:
+          - Id: S3Origin
+            DomainName: !Sub 'fixyachips-vod-platform-${AWS::AccountId}.s3.amazonaws.com'
+            S3OriginConfig: {OriginAccessIdentity: ''}
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          CachePolicyId: 65832739-8518-4e30-a6ad-5604139227f2
+
+  # 4. BACKEND (Matched to original names)
+  StudentTable:
+    Type: 'AWS::DynamoDB::Table'
+    Properties:
+      TableName: !Sub 'FixyachipsStudents-${AWS::StackName}'
+      AttributeDefinitions: [{AttributeName: StudentID, AttributeType: S}]
+      KeySchema: [{AttributeName: StudentID, KeyType: HASH}]
+      BillingMode: PAY_PER_REQUEST
+
+  FixyachipsMasterRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: [lambda.amazonaws.com] }
+            Action: ['sts:AssumeRole']
+      ManagedPolicyArns: ['arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole']
+      Policies:
+        - PolicyName: FixyachipsAIPowerhouse
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ['s3:*', 'dynamodb:*', 'ses:SendEmail', 'bedrock:*', 'transcribe:*', 'translate:*', 'polly:*']
+                Resource: '*'
+
+Outputs:
+  WebsiteURL:
+    Value: !GetAtt GlobalDistribution.DomainName

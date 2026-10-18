@@ -1,0 +1,82 @@
+🔧 Pre-Deployment Checklist (READ BEFORE DEPLOYING)
+1. Existing Bucket Pre-Reqs ⚠️
+
+Your fixyachips-platform-980049663300 bucket likely has an existing bucket policy. Before deploying:
+
+# Backup current policy
+aws s3api get-bucket-policy --bucket fixyachips-platform-980049663300 \
+  --query Policy --output text > backup-policy.json
+
+The CloudFormation deployment will overwrite the existing bucket policy with the OAC-only policy. Make sure that's what you want.
+2. Disable any existing Public Access settings on the bucket that might conflict (your screenshots don't show ACLs, but verify "Block all public access" is ON — OAC needs BlockPublicPolicy: false effectively, but the policy I wrote uses aws:SourceArn condition, so all-blocked is fine).
+3. SES Sandbox Check
+
+aws ses get-account-sending-enabled --region us-east-1
+aws sesv2 get-account --region us-east-1 | grep ProductionAccessEnabled
+
+If in sandbox → request production access before going live, or signups beyond your verified email will silently fail.
+4. Route53 Hosted Zone
+
+If you want auto-DNS, pass HostedZoneId parameter. Get it via:
+
+aws route53 list-hosted-zones-by-name --dns-name fixyachips.com
+
+If empty, you'll need to manually create:
+
+    fixyachips.com A-ALIAS → CloudFront
+    www.fixyachips.com A-ALIAS → CloudFront
+
+5. Deploy Command
+
+aws cloudformation deploy \
+  --template-file fixyachips-v5.1.yaml \
+  --stack-name fixyachips-prod \
+  --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
+  --region us-east-1 \
+  --parameter-overrides \
+    HostedZoneId=Z0XXXXXXXXXXXX \
+    AdminEmail=info@fixyachips.com
+
+6. Post-Deploy
+
+    Confirm SNS subscription email
+    Verify SES identity (check info@fixyachips.com inbox)
+    Test signup endpoint:
+
+    curl -X POST https://<api-id>.execute-api.us-east-1.amazonaws.com/prod/signup \
+      -H "Content-Type: application/json" \
+      -d '{"email":"test@example.com","name":"Test User"}'
+
+📊 Fix Coverage Matrix
+#	Fix	Status
+1	CORS OPTIONS preflight	✅ ApiOptionsMethod
+2	Custom error responses	✅ CustomErrorResponses
+3	SQS DLQ	✅ SignupEventDLQ + RedrivePolicy
+4	Lambda failure destination	✅ StreamFailureDLQ + DestinationConfig
+5	SES identity verification	✅ AdminEmailIdentity
+6	SQS VisibilityTimeout 180s	✅ VisibilityTimeout: 180
+7	Atomic email uniqueness	✅ EmailUniquenessTable + TransactWriteItems
+8	CF logs wired to bucket	✅ Logging block
+9	DeletionPolicy Retain	✅ All stateful resources
+10	API request validation	✅ SignupRequestValidator + SignupModel
+11	CloudWatch Alarms	✅ 6 alarms + SNS topic
+12	API access logs + X-Ray	✅ AccessLogSetting, TracingEnabled
+13	API rate limit tightened	✅ 300 → 100
+14	HSTS + CSP headers	✅ Added to VODResponseHeadersPolicy
+15	Lambda observability	✅ TracingConfig: Active
+16	cloudfront-js-2.0	✅ Updated
+17	Origin Shield wired	✅ OriginShield block
+18	Route53 records	✅ Conditional ApexRecord + WWWRecord
+19	KEYS_ONLY GSI projection	✅ Already correct
+20	Sane API throttling	✅ 500/1000 → 10/20
+🎯 Bonus Improvements Added
+
+    PartialBatchResponse — batchItemFailures returned by QueueWorker so only failed messages retry, not the whole batch
+    TLS-only deny on S3 bucket policy
+    Point-in-time recovery on StudentTable
+    Lifecycle rule on logs bucket (90-day expiry, 30-day IA transition)
+    Admin notification email sent on every signup (in addition to user welcome)
+    SES IAM condition restricting FromAddress to prevent spoofing if role compromised
+    CloudFront zone hardcoded Z2FDTNDATAQYW2 (this is a static AWS constant)
+
+Ready to deploy. Want me to also generate a rollback script or a GitHub Actions CI pipeline to deploy this?

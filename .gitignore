@@ -28,3 +28,21 @@ venv/
 
 # AWS SAM
 .aws-sam/
+
+# SENSITIVE FILES - NEVER COMMIT
+fixyachips docs/
+fixyachips notes/
+screenshots/
+"fixyachips graphic arts"/
+"Project Raw Footage"/
+"windshield damages  pics"/
+Fixyachips_Global_LIVE_2026_03_10/sandbox/
+*.png
+*.jpg
+*.jpeg
+*.JPG
+*.PNG
+*.pdf
+*.odt
+*.xcf
+*.zip

@@ -5,9 +5,9 @@ data "aws_region" "current" {}
 data "aws_partition" "current" {}
 
 locals {
-  account_id      = data.aws_caller_identity.current.account_id
-  region          = data.aws_region.current.name
-  partition       = data.aws_partition.current.partition
+  account_id = data.aws_caller_identity.current.account_id
+  region     = data.aws_region.current.name
+  partition  = data.aws_partition.current.partition
 
   platform_bucket = "fixyachips-platform-${local.account_id}-prod"
   logs_bucket     = "fixyachips-logs-${local.account_id}-prod-v2"

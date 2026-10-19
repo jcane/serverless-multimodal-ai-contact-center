@@ -28,6 +28,35 @@ import {
   to = aws_s3_bucket.logs
   id = "fixyachips-logs-980049663300-prod-v2"
 }
+import {
+  to = aws_s3_bucket_versioning.platform
+  id = "fixyachips-platform-980049663300-prod"
+}
+
+import {
+  to = aws_s3_bucket_server_side_encryption_configuration.platform
+  id = "fixyachips-platform-980049663300-prod"
+}
+
+import {
+  to = aws_s3_bucket_public_access_block.platform
+  id = "fixyachips-platform-980049663300-prod"
+}
+
+import {
+  to = aws_s3_bucket_versioning.logs
+  id = "fixyachips-logs-980049663300-prod-v2"
+}
+
+import {
+  to = aws_s3_bucket_server_side_encryption_configuration.logs
+  id = "fixyachips-logs-980049663300-prod-v2"
+}
+
+import {
+  to = aws_s3_bucket_public_access_block.logs
+  id = "fixyachips-logs-980049663300-prod-v2"
+}
 
 
 # ─────────────────────────────────────────────

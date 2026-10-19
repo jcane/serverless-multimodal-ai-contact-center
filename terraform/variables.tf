@@ -20,3 +20,20 @@ variable "project_name" {
   type        = string
   default     = "fixyachips"
 }
+variable "account_id" {
+  description = "AWS Account ID"
+  type        = string
+  default     = "980049663300"
+}
+
+variable "admin_email" {
+  description = "Admin email for alerts"
+  type        = string
+  default     = "info@fixyachips.com"
+}
+
+variable "domain_name" {
+  description = "Primary domain name"
+  type        = string
+  default     = "fixyachips.com"
+}

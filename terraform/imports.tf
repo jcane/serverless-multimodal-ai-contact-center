@@ -292,3 +292,8 @@ import {
   to = aws_iam_role.bedrock_agent_core
   id = "AmazonBedrockAgentCoreHarnessDefaultServiceRole-bwvpa"
 }
+# MediaConvert Queue
+import {
+  to = aws_media_convert_queue.main
+  id = "FixyachipsVODQueue-Fixyachips-App-V1"
+}

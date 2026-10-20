@@ -1,7 +1,8 @@
 ###############################################################
 # iam.tf
-# Fixyachips IAM Roles — 4 roles
-# Lambda + MediaConvert + ApiGateway + Bedrock AgentCore
+# Fixyachips IAM Roles — 3 roles
+# Lambda + MediaConvert + ApiGateway
+# NOTE: Bedrock AgentCore role lives in bedrock_iam.tf
 ###############################################################
 
 ###############################################################
@@ -104,51 +105,6 @@ resource "aws_iam_role" "api_gateway_cloudwatch_role" {
           Service = "apigateway.amazonaws.com"
         }
         Action = "sts:AssumeRole"
-      }
-    ]
-  })
-
-  lifecycle {
-    ignore_changes = [
-      assume_role_policy,
-      inline_policy,
-      managed_policy_arns
-    ]
-  }
-
-  tags = {
-    Project     = "Fixyachips"
-    Environment = "prod"
-    ManagedBy   = "Terraform"
-  }
-}
-
-###############################################################
-# Role 4 — Bedrock AgentCore Harness Role
-###############################################################
-resource "aws_iam_role" "bedrock_agent_core" {
-  name = "AmazonBedrockAgentCoreHarnessDefaultServiceRole-bwvpa"
-  path = "/service-role/"
-
-  max_session_duration = 3600
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Principal = {
-          Service = "bedrock-agentcore.amazonaws.com"
-        }
-        Action = "sts:AssumeRole"
-        Condition = {
-          StringEquals = {
-            "aws:SourceAccount" = var.account_id
-          }
-          ArnLike = {
-            "aws:SourceArn" = "arn:aws:bedrock-agentcore:us-east-1:${var.account_id}:*"
-          }
-        }
       }
     ]
   })

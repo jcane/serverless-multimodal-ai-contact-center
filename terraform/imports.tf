@@ -297,3 +297,7 @@ import {
   to = aws_media_convert_queue.main
   id = "FixyachipsVODQueue-Fixyachips-App-V1"
 }
+import {
+  to = aws_iam_policy.bedrock_agent_core_execution
+  id = "arn:aws:iam::980049663300:policy/service-role/AmazonBedrockAgentCoreHarnessExecutionPolicy_a739u"
+}

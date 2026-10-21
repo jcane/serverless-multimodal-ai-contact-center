@@ -21,26 +21,27 @@
 
 import {
   to = aws_s3_bucket.platform
-  id = "fixyachips-platform-980049663300-prod"
+  id = "fixyachips-platform-980049663300"
 }
 
 import {
   to = aws_s3_bucket.logs
   id = "fixyachips-logs-980049663300-prod-v2"
 }
+
 import {
   to = aws_s3_bucket_versioning.platform
-  id = "fixyachips-platform-980049663300-prod"
+  id = "fixyachips-platform-980049663300"
 }
 
 import {
   to = aws_s3_bucket_server_side_encryption_configuration.platform
-  id = "fixyachips-platform-980049663300-prod"
+  id = "fixyachips-platform-980049663300"
 }
 
 import {
   to = aws_s3_bucket_public_access_block.platform
-  id = "fixyachips-platform-980049663300-prod"
+  id = "fixyachips-platform-980049663300"
 }
 
 import {
@@ -292,11 +293,13 @@ import {
   to = aws_iam_role.bedrock_agent_core
   id = "AmazonBedrockAgentCoreHarnessDefaultServiceRole-bwvpa"
 }
+
 # MediaConvert Queue
 import {
   to = aws_media_convert_queue.main
   id = "FixyachipsVODQueue-Fixyachips-App-V1"
 }
+
 import {
   to = aws_iam_policy.bedrock_agent_core_execution
   id = "arn:aws:iam::980049663300:policy/service-role/AmazonBedrockAgentCoreHarnessExecutionPolicy_a739u"

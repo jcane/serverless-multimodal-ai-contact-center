@@ -1,118 +1,123 @@
-# ============================================
-# S3.TF
-# Fixyachips VOD & Monetization Platform
-# Platform bucket + Logs bucket
-# ============================================
+# ============================================================
+# s3.tf
+# VOD Project — All Managed Buckets
+# Audit completed October 20 2026
+# ============================================================
 
-# ─────────────────────────────────────────────
-# PLATFORM BUCKET
-# Stores all VOD content + platform assets
-# ─────────────────────────────────────────────
-
+# ------------------------------------------------------------
+# LIVE WEBSITE
+# ------------------------------------------------------------
 resource "aws_s3_bucket" "platform" {
+  bucket = "fixyachips-platform-980049663300"
+
+  tags = {
+    Project     = "fixyachips-vod"
+    Environment = "prod"
+    Purpose     = "live-website"
+  }
+}
+
+# ------------------------------------------------------------
+# LAMBDA LAYERS
+# ------------------------------------------------------------
+resource "aws_s3_bucket" "platform_prod" {
   bucket = "fixyachips-platform-980049663300-prod"
 
   tags = {
-    Project            = "Fixyachips"
-    Environment        = "prod"
-    CostCenter         = "ContentStorage-prod"
-    DataClassification = "Confidential"
+    Project     = "fixyachips-vod"
+    Environment = "prod"
+    Purpose     = "lambda-layers"
   }
 }
 
-resource "aws_s3_bucket_versioning" "platform" {
-  bucket = aws_s3_bucket.platform.id
-
-  versioning_configuration {
-    status = "Enabled"
-  }
-}
-
-resource "aws_s3_bucket_server_side_encryption_configuration" "platform" {
-  bucket = aws_s3_bucket.platform.id
-
-  rule {
-    bucket_key_enabled = true
-
-    apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
-    }
-  }
-}
-
-resource "aws_s3_bucket_public_access_block" "platform" {
-  bucket = aws_s3_bucket.platform.id
-
-  block_public_acls       = true
-  ignore_public_acls      = true
-  block_public_policy     = true
-  restrict_public_buckets = true
-}
-
-
-# ─────────────────────────────────────────────
-# LOGS BUCKET
-# Stores CloudFront + S3 access logs
-# ─────────────────────────────────────────────
-
+# ------------------------------------------------------------
+# LOGS
+# ------------------------------------------------------------
 resource "aws_s3_bucket" "logs" {
   bucket = "fixyachips-logs-980049663300-prod-v2"
 
   tags = {
-    Project     = "Fixyachips"
+    Project     = "fixyachips-vod"
     Environment = "prod"
-    CostCenter  = "Logging-prod"
+    Purpose     = "logs"
   }
 }
 
-resource "aws_s3_bucket_versioning" "logs" {
-  bucket = aws_s3_bucket.logs.id
+# ------------------------------------------------------------
+# RAW FOOTAGE ARCHIVE
+# ------------------------------------------------------------
+resource "aws_s3_bucket" "vault" {
+  bucket = "fixyachips-v2-master-vault"
 
-  versioning_configuration {
-    status = "Suspended"
+  tags = {
+    Project     = "fixyachips-vod"
+    Environment = "prod"
+    Purpose     = "raw-footage-archive"
   }
 }
 
-resource "aws_s3_bucket_server_side_encryption_configuration" "logs" {
-  bucket = aws_s3_bucket.logs.id
+# ------------------------------------------------------------
+# VOD SOURCE INPUT
+# ------------------------------------------------------------
+resource "aws_s3_bucket" "vod_source" {
+  bucket = "videoondemandfixyachips-source71e471f1-wlr7kazkufmk"
 
-  rule {
-    apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
-    }
+  tags = {
+    Project     = "fixyachips-vod"
+    Environment = "prod"
+    Purpose     = "vod-source-input"
   }
 }
 
-resource "aws_s3_bucket_public_access_block" "logs" {
-  bucket = aws_s3_bucket.logs.id
+# ------------------------------------------------------------
+# VOD HLS OUTPUT
+# ------------------------------------------------------------
+resource "aws_s3_bucket" "vod_destination" {
+  bucket = "videoondemandfixyachips-destination920a3c57-ykrxy0jwcztr"
 
-  block_public_acls       = true
-  ignore_public_acls      = true
-  block_public_policy     = true
-  restrict_public_buckets = true
+  tags = {
+    Project     = "fixyachips-vod"
+    Environment = "prod"
+    Purpose     = "vod-hls-output"
+  }
 }
 
+# ------------------------------------------------------------
+# VOD PIPELINE LOGS
+# ------------------------------------------------------------
+resource "aws_s3_bucket" "vod_logs" {
+  bucket = "videoondemandfixyachips-logs6819bb44-xb8dlny4ktd9"
 
-# ============================================
-# OUTPUTS
-# ============================================
-
-output "platform_bucket_name" {
-  description = "Platform S3 bucket name"
-  value       = aws_s3_bucket.platform.id
+  tags = {
+    Project     = "fixyachips-vod"
+    Environment = "prod"
+    Purpose     = "vod-pipeline-logs"
+  }
 }
 
-output "platform_bucket_arn" {
-  description = "Platform S3 bucket ARN"
-  value       = aws_s3_bucket.platform.arn
+# ------------------------------------------------------------
+# MEDIACONVERT JOB DEFINITIONS
+# ------------------------------------------------------------
+resource "aws_s3_bucket" "vod_jobs" {
+  bucket = "videoondemandfixyachips-manuals"
+
+  tags = {
+    Project     = "fixyachips-vod"
+    Environment = "prod"
+    Purpose     = "mediaconvert-job-definitions"
+  }
 }
 
-output "logs_bucket_name" {
-  description = "Logs S3 bucket name"
-  value       = aws_s3_bucket.logs.id
-}
+# ------------------------------------------------------------
+# TERRAFORM STATE
+# NOTE: Managed separately — do not destroy
+# ------------------------------------------------------------
+resource "aws_s3_bucket" "terraform_state" {
+  bucket = "fixyachips-terraform-state-980049663300"
 
-output "logs_bucket_arn" {
-  description = "Logs S3 bucket ARN"
-  value       = aws_s3_bucket.logs.arn
+  tags = {
+    Project     = "fixyachips-vod"
+    Environment = "prod"
+    Purpose     = "terraform-state"
+  }
 }

@@ -1,0 +1,434 @@
+{
+  "Comment": "Complete End-to-End VOD Localization Pipeline - 7 Languages FIXED",
+  "StartAt": "SanitizeInput",
+  "States": {
+    "SanitizeInput": {
+      "Type": "Pass",
+      "Parameters": {
+        "jobName.$": "States.ArrayGetItem(States.StringSplit(States.ArrayGetItem(States.StringSplit($.jobName, '/'), States.MathAdd(States.ArrayLength(States.StringSplit($.jobName, '/')), -1)), '.'), 0)",
+        "videoSourcePath.$": "$.videoSourcePath",
+        "destinationTutorialPath.$": "$.destinationTutorialPath"
+      },
+      "Next": "StartTranscriptionJob"
+    },
+    "StartTranscriptionJob": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:transcribe:startTranscriptionJob",
+      "Parameters": {
+        "TranscriptionJobName.$": "$.jobName",
+        "LanguageCode": "en-US",
+        "Media": {
+          "MediaFileUri.$": "$.videoSourcePath"
+        },
+        "OutputBucketName": "videoondemandfixyachips-manuals",
+        "OutputKey.$": "States.Format('{}.json', $.jobName)"
+      },
+      "ResultPath": "$.TranscriptionResult",
+      "Next": "WaitForTranscription"
+    },
+    "WaitForTranscription": {
+      "Type": "Wait",
+      "Seconds": 30,
+      "Next": "CheckTranscriptionStatus"
+    },
+    "CheckTranscriptionStatus": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:transcribe:getTranscriptionJob",
+      "Parameters": {
+        "TranscriptionJobName.$": "$.jobName"
+      },
+      "ResultSelector": {
+        "JobStatus.$": "$.TranscriptionJob.TranscriptionJobStatus",
+        "TranscriptFileUri.$": "$.TranscriptionJob.Transcript.TranscriptFileUri"
+      },
+      "ResultPath": "$.transcribeStatus",
+      "Next": "IsTranscriptionComplete"
+    },
+    "IsTranscriptionComplete": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.transcribeStatus.JobStatus",
+          "StringEquals": "COMPLETED",
+          "Next": "FetchTranscriptText"
+        },
+        {
+          "Variable": "$.transcribeStatus.JobStatus",
+          "StringEquals": "FAILED",
+          "Next": "TranscriptionFailed"
+        }
+      ],
+      "Default": "WaitForTranscription"
+    },
+    "TranscriptionFailed": {
+      "Type": "Fail",
+      "Error": "TranscriptionFailed",
+      "Cause": "AWS Transcribe job failed"
+    },
+    "FetchTranscriptText": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:s3:getObject",
+      "Parameters": {
+        "Bucket": "videoondemandfixyachips-manuals",
+        "Key.$": "States.Format('{}.json', $.jobName)"
+      },
+      "ResultSelector": {
+        "TranscriptBody.$": "$.Body"
+      },
+      "ResultPath": "$.fetchedTranscript",
+      "Next": "PrepareMapInput"
+    },
+    "PrepareMapInput": {
+      "Type": "Pass",
+      "Parameters": {
+        "jobName.$": "$.jobName",
+        "videoSourcePath.$": "$.videoSourcePath",
+        "destinationTutorialPath.$": "$.destinationTutorialPath",
+        "transcriptUri.$": "$.transcribeStatus.TranscriptFileUri",
+        "sourceText.$": "$.fetchedTranscript.TranscriptBody",
+        "targetLanguages": [
+          "es",
+          "pt",
+          "de",
+          "fr",
+          "it",
+          "pl",
+          "sv"
+        ]
+      },
+      "Next": "TranslateAndSynthesizeMap"
+    },
+    "TranslateAndSynthesizeMap": {
+      "Type": "Map",
+      "ItemsPath": "$.targetLanguages",
+      "ItemSelector": {
+        "languageCode.$": "$$.Map.Item.Value",
+        "sourceText.$": "$.sourceText",
+        "jobName.$": "$.jobName",
+        "destinationBucket": "videoondemandfixyachips-destination920a3c57-ykrxy0jwcztr"
+      },
+      "MaxConcurrency": 3,
+      "ResultPath": "$.localizationResults",
+      "Iterator": {
+        "StartAt": "CallTranslate",
+        "States": {
+          "CallTranslate": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:translate:translateText",
+            "Parameters": {
+              "SourceLanguageCode": "en",
+              "TargetLanguageCode.$": "$.languageCode",
+              "Text.$": "$.sourceText"
+            },
+            "ResultSelector": {
+              "TranslatedText.$": "$.TranslatedText",
+              "SourceLanguageCode.$": "$.SourceLanguageCode",
+              "TargetLanguageCode.$": "$.TargetLanguageCode"
+            },
+            "ResultPath": "$.translationResult",
+            "Next": "MapLanguageToPolly"
+          },
+          "MapLanguageToPolly": {
+            "Type": "Choice",
+            "Choices": [
+              {
+                "Variable": "$.languageCode",
+                "StringEquals": "es",
+                "Next": "SetSpanish"
+              },
+              {
+                "Variable": "$.languageCode",
+                "StringEquals": "pt",
+                "Next": "SetPortuguese"
+              },
+              {
+                "Variable": "$.languageCode",
+                "StringEquals": "de",
+                "Next": "SetGerman"
+              },
+              {
+                "Variable": "$.languageCode",
+                "StringEquals": "fr",
+                "Next": "SetFrench"
+              },
+              {
+                "Variable": "$.languageCode",
+                "StringEquals": "it",
+                "Next": "SetItalian"
+              },
+              {
+                "Variable": "$.languageCode",
+                "StringEquals": "pl",
+                "Next": "SetPolish"
+              },
+              {
+                "Variable": "$.languageCode",
+                "StringEquals": "sv",
+                "Next": "SetSwedish"
+              }
+            ],
+            "Default": "SetEnglish"
+          },
+          "SetSpanish": {
+            "Type": "Pass",
+            "Parameters": {
+              "pollyLanguageCode": "es-ES",
+              "voiceId": "Lucia",
+              "engine": "neural"
+            },
+            "ResultPath": "$.pollyLocale",
+            "Next": "CallPolly"
+          },
+          "SetPortuguese": {
+            "Type": "Pass",
+            "Parameters": {
+              "pollyLanguageCode": "pt-BR",
+              "voiceId": "Camila",
+              "engine": "neural"
+            },
+            "ResultPath": "$.pollyLocale",
+            "Next": "CallPolly"
+          },
+          "SetGerman": {
+            "Type": "Pass",
+            "Parameters": {
+              "pollyLanguageCode": "de-DE",
+              "voiceId": "Daniel",
+              "engine": "neural"
+            },
+            "ResultPath": "$.pollyLocale",
+            "Next": "CallPolly"
+          },
+          "SetFrench": {
+            "Type": "Pass",
+            "Parameters": {
+              "pollyLanguageCode": "fr-FR",
+              "voiceId": "Remi",
+              "engine": "neural"
+            },
+            "ResultPath": "$.pollyLocale",
+            "Next": "CallPolly"
+          },
+          "SetItalian": {
+            "Type": "Pass",
+            "Parameters": {
+              "pollyLanguageCode": "it-IT",
+              "voiceId": "Adriano",
+              "engine": "neural"
+            },
+            "ResultPath": "$.pollyLocale",
+            "Next": "CallPolly"
+          },
+          "SetPolish": {
+            "Type": "Pass",
+            "Parameters": {
+              "pollyLanguageCode": "pl-PL",
+              "voiceId": "Jacek",
+              "engine": "standard"
+            },
+            "ResultPath": "$.pollyLocale",
+            "Next": "CallPolly"
+          },
+          "SetSwedish": {
+            "Type": "Pass",
+            "Parameters": {
+              "pollyLanguageCode": "sv-SE",
+              "voiceId": "Maja",
+              "engine": "standard"
+            },
+            "ResultPath": "$.pollyLocale",
+            "Next": "CallPolly"
+          },
+          "SetEnglish": {
+            "Type": "Pass",
+            "Parameters": {
+              "pollyLanguageCode": "en-US",
+              "voiceId": "Matthew",
+              "engine": "neural"
+            },
+            "ResultPath": "$.pollyLocale",
+            "Next": "CallPolly"
+          },
+          "CallPolly": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:polly:startSpeechSynthesisTask",
+            "Parameters": {
+              "Engine.$": "$.pollyLocale.engine",
+              "OutputFormat": "mp3",
+              "Text.$": "$.translationResult.TranslatedText",
+              "LanguageCode.$": "$.pollyLocale.pollyLanguageCode",
+              "VoiceId.$": "$.pollyLocale.voiceId",
+              "OutputS3BucketName.$": "$.destinationBucket",
+              "OutputS3KeyPrefix.$": "States.Format('audio/{}/{}', $.jobName, $.languageCode)"
+            },
+            "ResultSelector": {
+              "TaskId.$": "$.SynthesisTask.TaskId",
+              "TaskStatus.$": "$.SynthesisTask.TaskStatus",
+              "OutputUri.$": "$.SynthesisTask.OutputUri"
+            },
+            "ResultPath": "$.pollyResult",
+            "Next": "WaitForPolly"
+          },
+          "WaitForPolly": {
+            "Type": "Wait",
+            "Seconds": 15,
+            "Next": "CheckPollyStatus"
+          },
+          "CheckPollyStatus": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:polly:getSpeechSynthesisTask",
+            "Parameters": {
+              "TaskId.$": "$.pollyResult.TaskId"
+            },
+            "ResultSelector": {
+              "TaskId.$": "$.SynthesisTask.TaskId",
+              "TaskStatus.$": "$.SynthesisTask.TaskStatus",
+              "OutputUri.$": "$.SynthesisTask.OutputUri"
+            },
+            "ResultPath": "$.pollyStatus",
+            "Next": "IsPollyComplete"
+          },
+          "IsPollyComplete": {
+            "Type": "Choice",
+            "Choices": [
+              {
+                "Variable": "$.pollyStatus.TaskStatus",
+                "StringEquals": "completed",
+                "Next": "PollySucceeded"
+              },
+              {
+                "Variable": "$.pollyStatus.TaskStatus",
+                "StringEquals": "failed",
+                "Next": "PollyFailed"
+              }
+            ],
+            "Default": "WaitForPolly"
+          },
+          "PollySucceeded": {
+            "Type": "Pass",
+            "Parameters": {
+              "languageCode.$": "$.languageCode",
+              "audioUri.$": "$.pollyStatus.OutputUri",
+              "translatedText.$": "$.translationResult.TranslatedText"
+            },
+            "End": true
+          },
+          "PollyFailed": {
+            "Type": "Fail",
+            "Error": "PollyFailed",
+            "Cause": "Polly speech synthesis task failed"
+          }
+        }
+      },
+      "Next": "MediaConvertTranscode"
+    },
+    "MediaConvertTranscode": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:mediaconvert:createJob",
+      "Parameters": {
+        "Role": "arn:aws:iam::980049663300:role/MediaConvert_VOD_Localization_Role",
+        "Settings": {
+          "Inputs": [
+            {
+              "AudioSelectors": {
+                "Audio Selector 1": {
+                  "DefaultSelection": "DEFAULT"
+                }
+              },
+              "FileInput.$": "$.videoSourcePath"
+            }
+          ],
+          "OutputGroups": [
+            {
+              "Name": "File Group",
+              "OutputGroupSettings": {
+                "Type": "FILE_GROUP_SETTINGS",
+                "FileGroupSettings": {
+                  "Destination.$": "$.destinationTutorialPath"
+                }
+              },
+              "Outputs": [
+                {
+                  "VideoDescription": {
+                    "CodecSettings": {
+                      "Codec": "H_264",
+                      "H264Settings": {
+                        "MaxBitrate": 5000000,
+                        "RateControlMode": "QVBR"
+                      }
+                    }
+                  },
+                  "AudioDescriptions": [
+                    {
+                      "AudioSourceName": "Audio Selector 1",
+                      "CodecSettings": {
+                        "Codec": "AAC",
+                        "AacSettings": {
+                          "Bitrate": 96000,
+                          "CodingMode": "CODING_MODE_2_0",
+                          "SampleRate": 48000
+                        }
+                      }
+                    }
+                  ],
+                  "ContainerSettings": {
+                    "Container": "MP4"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "AccelerationSettings": {
+          "Mode": "DISABLED"
+        },
+        "StatusUpdateInterval": "SECONDS_60",
+        "Queue": "arn:aws:mediaconvert:us-east-1:980049663300:queues/Default"
+      },
+      "ResultPath": "$.mediaConvertResult",
+      "Next": "WaitForMediaConvert"
+    },
+    "WaitForMediaConvert": {
+      "Type": "Wait",
+      "Seconds": 60,
+      "Next": "CheckMediaConvertStatus"
+    },
+    "CheckMediaConvertStatus": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:mediaconvert:getJob",
+      "Parameters": {
+        "Id.$": "$.mediaConvertResult.Job.Id"
+      },
+      "ResultSelector": {
+        "JobStatus.$": "$.Job.Status",
+        "JobId.$": "$.Job.Id"
+      },
+      "ResultPath": "$.mediaConvertStatus",
+      "Next": "IsMediaConvertComplete"
+    },
+    "IsMediaConvertComplete": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.mediaConvertStatus.JobStatus",
+          "StringEquals": "COMPLETE",
+          "Next": "PipelineComplete"
+        },
+        {
+          "Variable": "$.mediaConvertStatus.JobStatus",
+          "StringEquals": "ERROR",
+          "Next": "MediaConvertFailed"
+        }
+      ],
+      "Default": "WaitForMediaConvert"
+    },
+    "PipelineComplete": {
+      "Type": "Succeed"
+    },
+    "MediaConvertFailed": {
+      "Type": "Fail",
+      "Error": "MediaConvertFailed",
+      "Cause": "MediaConvert job failed"
+    }
+  }
+}

@@ -304,3 +304,42 @@ import {
   to = aws_iam_policy.bedrock_agent_core_execution
   id = "arn:aws:iam::980049663300:policy/service-role/AmazonBedrockAgentCoreHarnessExecutionPolicy_a739u"
 }
+
+
+# ─────────────────────────────────────────────
+# S3 BUCKETS — Missing imports (added Week 5)
+# ─────────────────────────────────────────────
+
+import {
+  to = aws_s3_bucket.platform_prod
+  id = "fixyachips-platform-980049663300-prod"
+}
+
+import {
+  to = aws_s3_bucket.vault
+  id = "fixyachips-v2-master-vault"
+}
+
+import {
+  to = aws_s3_bucket.vod_source
+  id = "videoondemandfixyachips-source71e471f1-wlr7kazkufmk"
+}
+
+import {
+  to = aws_s3_bucket.vod_destination
+  id = "videoondemandfixyachips-destination920a3c57-ykrxy0jwcztr"
+}
+import {
+  to = aws_s3_bucket.vod_logs
+  id = "videoondemandfixyachips-logs6819bb44-xb8dlny4ktd9"
+}
+
+import {
+  to = aws_s3_bucket.vod_jobs
+  id = "videoondemandfixyachips-manuals"
+}
+
+import {
+  to = aws_s3_bucket.terraform_state
+  id = "fixyachips-terraform-state-980049663300"
+}

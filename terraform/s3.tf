@@ -121,3 +121,64 @@ resource "aws_s3_bucket" "terraform_state" {
     Purpose     = "terraform-state"
   }
 }
+# ------------------------------------------------------------
+# PLATFORM BUCKET — Sub-Resources
+# ------------------------------------------------------------
+resource "aws_s3_bucket_versioning" "platform" {
+  bucket = aws_s3_bucket.platform.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "platform" {
+  bucket = aws_s3_bucket.platform.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+    bucket_key_enabled = true
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "platform" {
+  bucket = aws_s3_bucket.platform.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+# ------------------------------------------------------------
+# LOGS BUCKET — Sub-Resources
+# ------------------------------------------------------------
+resource "aws_s3_bucket_versioning" "logs" {
+  bucket = aws_s3_bucket.logs.id
+
+  versioning_configuration {
+    status = "Suspended"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "logs" {
+  bucket = aws_s3_bucket.logs.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+    bucket_key_enabled = false
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "logs" {
+  bucket = aws_s3_bucket.logs.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}

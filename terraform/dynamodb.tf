@@ -104,6 +104,12 @@ resource "aws_dynamodb_table" "students_dev" {
     kms_key_arn = "arn:aws:kms:us-east-1:${var.account_id}:key/0279d82a-7266-4f3c-ad74-861ebe8764df"
   }
 
+  lifecycle {
+    ignore_changes = [
+      server_side_encryption
+    ]
+  }
+
   tags = {
     Name        = "FixyachipsStudents-Fixyachips-App-V1"
     Environment = "dev"

@@ -1,0 +1,19 @@
+# Terraform sensitive files — NEVER commit these
+terraform.tfvars
+*.tfvars
+
+# Terraform state files
+terraform.tfstate
+terraform.tfstate.backup
+.terraform/
+.terraform.lock.hcl
+
+# OS junk
+.DS_Store
+
+# Backend config contains hardcoded bucket name
+backend.tf
+
+# Import files reference real infrastructure IDs
+imports.tf
+

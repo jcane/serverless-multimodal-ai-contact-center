@@ -1,3 +1,6 @@
+
+
+
 # ============================================================
 # s3.tf
 # VOD Project — All Managed Buckets
@@ -8,7 +11,7 @@
 # LIVE WEBSITE
 # ------------------------------------------------------------
 resource "aws_s3_bucket" "platform" {
-  bucket = "fixyachips-platform-980049663300"
+  bucket = "fixyachips-platform-${var.account_id}"
 
   tags = {
     Project     = "fixyachips-vod"
@@ -21,7 +24,7 @@ resource "aws_s3_bucket" "platform" {
 # LAMBDA LAYERS
 # ------------------------------------------------------------
 resource "aws_s3_bucket" "platform_prod" {
-  bucket = "fixyachips-platform-980049663300-prod"
+  bucket = "fixyachips-platform-${var.account_id}-prod"
 
   tags = {
     Project     = "fixyachips-vod"
@@ -34,7 +37,7 @@ resource "aws_s3_bucket" "platform_prod" {
 # LOGS
 # ------------------------------------------------------------
 resource "aws_s3_bucket" "logs" {
-  bucket = "fixyachips-logs-980049663300-prod-v2"
+  bucket = "fixyachips-logs-${var.account_id}-prod-v2"
 
   tags = {
     Project     = "fixyachips-vod"
@@ -113,7 +116,7 @@ resource "aws_s3_bucket" "vod_jobs" {
 # NOTE: Managed separately — do not destroy
 # ------------------------------------------------------------
 resource "aws_s3_bucket" "terraform_state" {
-  bucket = "fixyachips-terraform-state-980049663300"
+  bucket = "fixyachips-terraform-state-${var.account_id}"
 
   tags = {
     Project     = "fixyachips-vod"

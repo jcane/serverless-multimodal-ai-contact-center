@@ -76,8 +76,24 @@
         "TranscriptBody.$": "$.Body"
       },
       "ResultPath": "$.fetchedTranscript",
+      "Next": "ExtractTranscriptText"
+    },
+    "ExtractTranscriptText": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "fixyachips-extract-transcript",
+        "Payload": {
+          "body.$": "$.fetchedTranscript.TranscriptBody"
+        }
+      },
+      "ResultSelector": {
+        "transcriptText.$": "$.Payload.transcriptText"
+      },
+      "ResultPath": "$.extractedTranscript",
       "Next": "PrepareMapInput"
     },
+
     "PrepareMapInput": {
       "Type": "Pass",
       "Parameters": {
@@ -85,7 +101,7 @@
         "videoSourcePath.$": "$.videoSourcePath",
         "destinationTutorialPath.$": "$.destinationTutorialPath",
         "transcriptUri.$": "$.transcribeStatus.TranscriptFileUri",
-        "sourceText.$": "$.fetchedTranscript.TranscriptBody",
+        "sourceText.$": "$.extractedTranscript.transcriptText",       
         "targetLanguages": [
           "es",
           "pt",

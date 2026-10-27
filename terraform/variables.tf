@@ -20,9 +20,11 @@ variable "project_name" {
   type        = string
   default     = "fixyachips"
 }
+
 variable "account_id" {
   description = "AWS Account ID"
-  type        = string}
+  type        = string
+}
 
 variable "admin_email" {
   description = "Admin email for alerts"

@@ -343,3 +343,9 @@ import {
   to = aws_s3_bucket.terraform_state
   id = "fixyachips-terraform-state-980049663300"
 }
+
+# Step Functions State Machine
+import {
+  to = aws_sfn_state_machine.vod_pipeline
+  id = "arn:aws:states:us-east-1:980049663300:stateMachine:Fixyachips-VOD-Localization-Multi-Language-Pipeline"
+}

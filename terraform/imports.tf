@@ -349,3 +349,15 @@ import {
   to = aws_sfn_state_machine.vod_pipeline
   id = "arn:aws:states:us-east-1:980049663300:stateMachine:Fixyachips-VOD-Localization-Multi-Language-Pipeline"
 }
+
+# EventBridge Rule
+import {
+  to = aws_cloudwatch_event_rule.vod_pipeline_trigger
+  id = "RouteS3UploadToStepFunctions"
+}
+
+# EventBridge Target
+import {
+  to = aws_cloudwatch_event_target.vod_pipeline_target
+  id = "RouteS3UploadToStepFunctions/e47b9358-dc13-4979-bcb7-e9c22616fc08"
+}

@@ -121,7 +121,8 @@ resource "aws_cognito_user_pool" "main" {
   lifecycle {
     ignore_changes = [
       schema,
-      lambda_config
+      lambda_config,
+      user_attribute_update_settings
     ]
   }
 

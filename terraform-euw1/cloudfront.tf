@@ -19,20 +19,21 @@ resource "aws_cloudfront_distribution" "main" {
     "www.fixyachips.com"
   ]
 
-  web_acl_id = "arn:aws:wafv2:us-east-1:${var.account_id}:global/webacl/WebBodyguard-CUKBiodvYfdj/de0fe5fb-4dbe-40af-8793-a5e9d4a9f71a"
+  # INTENTIONAL: CloudFront WAF must be in us-east-1 — AWS global requirement, do not change
+web_acl_id = "arn:aws:wafv2:us-east-1:${var.account_id}:global/webacl/WebBodyguard-CUKBiodvYfdj/de0fe5fb-4dbe-40af-8793-a5e9d4a9f71a"
 
   ##############################################################
   # Origin — S3 with OAC SigV4
   ##############################################################
   origin {
     origin_id   = "S3Origin"
-    domain_name = "fixyachips-platform-${var.account_id}.s3.us-east-1.amazonaws.com"
+    domain_name = "fixyachips-platform-${var.account_id}.s3.eu-west-1.amazonaws.com"
 
     origin_access_control_id = "E3DOZW0DC0H1VW"
 
     origin_shield {
       enabled              = true
-      origin_shield_region = "us-east-1"
+      origin_shield_region = "eu-west-1"
     }
 
     s3_origin_config {
@@ -136,6 +137,7 @@ resource "aws_cloudfront_distribution" "main" {
   # Viewer Certificate — ACM
   ##############################################################
   viewer_certificate {
+  # INTENTIONAL: CloudFront ACM certificate must be in us-east-1 — AWS global requirement, do not change
     acm_certificate_arn      = "arn:aws:acm:us-east-1:${var.account_id}:certificate/f18b7918-a24d-4a36-bfe4-34a114d4ccaf"
     ssl_support_method       = "sni-only"
     minimum_protocol_version = "TLSv1.2_2021"

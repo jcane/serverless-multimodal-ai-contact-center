@@ -1,8 +1,8 @@
 ###############################################################
 # cognito.tf
 # Fixyachips Global Users
-# Cognito User Pool — us-east-1_KZdOYrS4l
-# Importing: us-east-1_KZdOYrS4l
+# Cognito User Pool — original us-east-1_KZdOYrS4l (us-east-1)
+# eu-west-1: new pool will be created by Terraform
 ###############################################################
 
 resource "aws_cognito_user_pool" "main" {

@@ -44,7 +44,7 @@ resource "aws_secretsmanager_secret" "stripe" {
   name        = "Fixyachips/StripeCredentials/prod/Fixyachips-App-V1"
   description = "Stripe API keys and Webhook signing secrets"
 
-  kms_key_id = "arn:aws:kms:us-east-1:${var.account_id}:key/7120f964-80ba-492a-9829-16f900354a0f"
+ kms_key_id = aws_kms_key.secrets.arn
 
   tags = {
     Name               = "Fixyachips/StripeCredentials/prod/Fixyachips-App-V1"

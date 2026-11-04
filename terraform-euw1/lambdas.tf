@@ -33,7 +33,8 @@ resource "aws_lambda_function" "signup_worker" {
   filename = "${path.module}/../src/signup_worker/index.zip"
 
   dead_letter_config {
-    target_arn = "arn:aws:sqs:us-east-1:${var.account_id}:FixyachipsSignupDLQ-Fixyachips-App-V1"
+    target_arn = "arn:aws:sqs:eu-west-1:${var.account_id}:FixyachipsSignupDLQ-Fixyachips-App-V1"
+
   }
 
   environment {
@@ -77,18 +78,18 @@ resource "aws_lambda_function" "checkout_worker" {
   filename = "${path.module}/../src/checkout_worker/index.zip"
 
   layers = [
-    "arn:aws:lambda:us-east-1:${var.account_id}:layer:stripe-python-layer-Fixyachips-App-V1:1"
+    "arn:aws:lambda:eu-west-1:${var.account_id}:layer:stripe-python-layer-Fixyachips-App-V1:1"
   ]
 
   dead_letter_config {
-    target_arn = "arn:aws:sqs:us-east-1:${var.account_id}:FixyachipsCheckoutDLQ-Fixyachips-App-V1"
+    target_arn = target_arn = "arn:aws:sqs:eu-west-1:${var.account_id}:FixyachipsCheckoutDLQ-Fixyachips-App-V1"
   }
 
   environment {
     variables = {
       CANCEL_URL     = "https://fixyachips.com/pricing"
       ENVIRONMENT    = "prod"
-      SECRET_ARN     = "arn:aws:secretsmanager:us-east-1:${var.account_id}:secret:Fixyachips/StripeCredentials/prod/Fixyachips-App-V1-pc8krK"
+      SECRET_ARN     = SECRET_ARN = "arn:aws:secretsmanager:eu-west-1:${var.account_id}:secret:Fixyachips/StripeCredentials/prod/Fixyachips-App-V1-pc8krK"
       SUCCESS_URL    = "https://fixyachips.com/success?session_id={CHECKOUT_SESSION_ID}"
       PRICE_ID       = "price_REPLACE_WITH_REAL_PRICE_ID_prod"
       ALLOWED_ORIGIN = "https://fixyachips.com"
@@ -126,14 +127,14 @@ resource "aws_lambda_function" "stripe_webhook" {
   filename = "${path.module}/../src/stripe_webhook/index.zip"
 
   dead_letter_config {
-    target_arn = "arn:aws:sqs:us-east-1:${var.account_id}:FixyachipsStripeWebhookDLQ-Fixyachips-App-V1"
+    target_arn = target_arn = "arn:aws:sqs:eu-west-1:${var.account_id}:FixyachipsStripeWebhookDLQ-Fixyachips-App-V1"_
   }
 
   environment {
     variables = {
       TABLE_NAME  = "FixyachipsStudents-prod-Fixyachips-App-V1"
       ENVIRONMENT = "prod"
-      SECRET_ARN  = "arn:aws:secretsmanager:us-east-1:${var.account_id}:secret:Fixyachips/StripeCredentials/prod/Fixyachips-App-V1-pc8krK"
+      SECRET_ARN  = SECRET_ARN = "arn:aws:secretsmanager:eu-west-1:${var.account_id}:secret:Fixyachips/StripeCredentials/prod/Fixyachips-App-V1-pc8krK"
     }
   }
 

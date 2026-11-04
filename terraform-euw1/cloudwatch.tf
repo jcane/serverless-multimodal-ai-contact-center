@@ -17,7 +17,7 @@
 ##############################################################
 
 locals {
-  alerts_arn = "arn:aws:sns:us-east-1:${var.account_id}:FixyachipsAlerts-Fixyachips-App-V1"
+  alerts_arn = "arn:aws:sns:eu-west-1:${var.account_id}:FixyachipsAlerts-Fixyachips-App-V1"
 }
 
 ##############################################################

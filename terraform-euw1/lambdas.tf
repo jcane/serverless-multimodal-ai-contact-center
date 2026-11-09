@@ -169,7 +169,7 @@ resource "aws_lambda_function" "mediaconvert_trigger" {
 
   environment {
     variables = {
-      QUEUE_ARN = aws_media_convert_queue.vod_queue.arn
+      QUEUE_ARN = aws_media_convert_queue.main.arn
       OUTPUT_BUCKET     = "fixyachips-platform-${var.account_id}-prod"
       MEDIACONVERT_ROLE = "arn:aws:iam::${var.account_id}:role/Fixyachips-App-V1-MediaConvertRole-E0dMye487z6W"
     }

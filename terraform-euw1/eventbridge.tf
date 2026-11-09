@@ -1,4 +1,4 @@
-# ============================================================
+_# ============================================================
 # EventBridge Rule - VOD Pipeline Trigger
 # Routes S3 video uploads to Step Functions VOD pipeline
 # ============================================================
@@ -30,7 +30,7 @@ resource "aws_cloudwatch_event_target" "vod_pipeline_target" {
   rule           = aws_cloudwatch_event_rule.vod_pipeline_trigger.name
   event_bus_name = "default"
   target_id      = "e47b9358-dc13-4979-bcb7-e9c22616fc08"
-  arn            = "arn:aws:states:us-east-1:980049663300:stateMachine:Fixyachips-VOD-Localization-Multi-Language-Pipeline"
+  arn = aws_sfn_state_machine.vod_pipeline.arn
   role_arn       = "arn:aws:iam::980049663300:role/service-role/Amazon_EventBridge_Invoke_StepFunctions_1443270380"
 
   input_transformer {

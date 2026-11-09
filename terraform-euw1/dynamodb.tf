@@ -57,7 +57,7 @@ resource "aws_dynamodb_table" "students_prod" {
 
   server_side_encryption {
     enabled     = true
-    kms_key_arn = "arn:aws:kms:us-east-1:${var.account_id}:key/0fac4b6c-d569-41c8-83c7-f30da42b5701"
+    kms_key_arn = aws_kms_key.secrets.arn_
   }
 
   tags = {
@@ -101,7 +101,7 @@ resource "aws_dynamodb_table" "students_dev" {
 
   server_side_encryption {
     enabled     = true
-    kms_key_arn = "arn:aws:kms:us-east-1:${var.account_id}:key/0279d82a-7266-4f3c-ad74-861ebe8764df"
+    kms_key_arn = aws_kms_key.secrets.arn
   }
 
   lifecycle {

@@ -1,9 +1,6 @@
-
-
-
 # ============================================================
 # s3.tf
-# VOD Project — All Managed Buckets
+# VOD Project — All Managed Buckets — EU-WEST-1
 # Audit completed October 20 2026
 # ============================================================
 
@@ -11,12 +8,13 @@
 # LIVE WEBSITE
 # ------------------------------------------------------------
 resource "aws_s3_bucket" "platform" {
-  bucket = "fixyachips-platform-${var.account_id}"
+  bucket = "fixyachips-platform-${var.account_id}-euw1"
 
   tags = {
     Project     = "fixyachips-vod"
     Environment = "prod"
     Purpose     = "live-website"
+    Region      = "eu-west-1"
   }
 }
 
@@ -24,12 +22,13 @@ resource "aws_s3_bucket" "platform" {
 # LAMBDA LAYERS
 # ------------------------------------------------------------
 resource "aws_s3_bucket" "platform_prod" {
-  bucket = "fixyachips-platform-${var.account_id}-prod"
+  bucket = "fixyachips-platform-${var.account_id}-prod-euw1"
 
   tags = {
     Project     = "fixyachips-vod"
     Environment = "prod"
     Purpose     = "lambda-layers"
+    Region      = "eu-west-1"
   }
 }
 
@@ -37,12 +36,13 @@ resource "aws_s3_bucket" "platform_prod" {
 # LOGS
 # ------------------------------------------------------------
 resource "aws_s3_bucket" "logs" {
-  bucket = "fixyachips-logs-${var.account_id}-prod-v2"
+  bucket = "fixyachips-logs-${var.account_id}-prod-euw1"
 
   tags = {
     Project     = "fixyachips-vod"
     Environment = "prod"
     Purpose     = "logs"
+    Region      = "eu-west-1"
   }
 }
 
@@ -50,12 +50,13 @@ resource "aws_s3_bucket" "logs" {
 # RAW FOOTAGE ARCHIVE
 # ------------------------------------------------------------
 resource "aws_s3_bucket" "vault" {
-  bucket = "fixyachips-v2-master-vault"
+  bucket = "fixyachips-v2-master-vault-euw1"
 
   tags = {
     Project     = "fixyachips-vod"
     Environment = "prod"
     Purpose     = "raw-footage-archive"
+    Region      = "eu-west-1"
   }
 }
 
@@ -63,12 +64,13 @@ resource "aws_s3_bucket" "vault" {
 # VOD SOURCE INPUT
 # ------------------------------------------------------------
 resource "aws_s3_bucket" "vod_source" {
-  bucket = "videoondemandfixyachips-source71e471f1-wlr7kazkufmk"
+  bucket = "fixyachips-vod-source-${var.account_id}-euw1"
 
   tags = {
     Project     = "fixyachips-vod"
     Environment = "prod"
     Purpose     = "vod-source-input"
+    Region      = "eu-west-1"
   }
 }
 
@@ -76,12 +78,13 @@ resource "aws_s3_bucket" "vod_source" {
 # VOD HLS OUTPUT
 # ------------------------------------------------------------
 resource "aws_s3_bucket" "vod_destination" {
-  bucket = "videoondemandfixyachips-destination920a3c57-ykrxy0jwcztr"
+  bucket = "fixyachips-vod-destination-${var.account_id}-euw1"
 
   tags = {
     Project     = "fixyachips-vod"
     Environment = "prod"
     Purpose     = "vod-hls-output"
+    Region      = "eu-west-1"
   }
 }
 
@@ -89,12 +92,13 @@ resource "aws_s3_bucket" "vod_destination" {
 # VOD PIPELINE LOGS
 # ------------------------------------------------------------
 resource "aws_s3_bucket" "vod_logs" {
-  bucket = "videoondemandfixyachips-logs6819bb44-xb8dlny4ktd9"
+  bucket = "fixyachips-vod-logs-${var.account_id}-prod-euw1"
 
   tags = {
     Project     = "fixyachips-vod"
     Environment = "prod"
     Purpose     = "vod-pipeline-logs"
+    Region      = "eu-west-1"
   }
 }
 
@@ -102,28 +106,31 @@ resource "aws_s3_bucket" "vod_logs" {
 # MEDIACONVERT JOB DEFINITIONS
 # ------------------------------------------------------------
 resource "aws_s3_bucket" "vod_jobs" {
-  bucket = "videoondemandfixyachips-manuals"
+  bucket = "fixyachips-vod-manuals-${var.account_id}-euw1"
 
   tags = {
     Project     = "fixyachips-vod"
     Environment = "prod"
     Purpose     = "mediaconvert-job-definitions"
+    Region      = "eu-west-1"
   }
 }
 
 # ------------------------------------------------------------
 # TERRAFORM STATE
-# NOTE: Managed separately — do not destroy
+# NOTE: Already exists — created manually — do not destroy
 # ------------------------------------------------------------
 resource "aws_s3_bucket" "terraform_state" {
-  bucket = "fixyachips-terraform-state-${var.account_id}"
+  bucket = "fixyachips-terraform-state-${var.account_id}-euw1"
 
   tags = {
     Project     = "fixyachips-vod"
     Environment = "prod"
     Purpose     = "terraform-state"
+    Region      = "eu-west-1"
   }
 }
+
 # ------------------------------------------------------------
 # PLATFORM BUCKET — Sub-Resources
 # ------------------------------------------------------------

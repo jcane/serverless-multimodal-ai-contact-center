@@ -11,7 +11,7 @@
 ###############################################################################
 
 resource "aws_iam_role" "bedrock_agent_core" {
-  name        = "AmazonBedrockAgentCoreHarnessDefaultServiceRole-bwvpa"
+  name        = "AmazonBedrockAgentCoreHarnessDefaultServiceRole-bwvpa-euw1"
   path        = "/service-role/"
   description = "Fixyachips AgentCore harness default service role"
 
@@ -60,7 +60,7 @@ resource "aws_iam_role" "bedrock_agent_core" {
 ###############################################################################
 
 resource "aws_iam_policy" "bedrock_agent_core_execution" {
-  name = "AmazonBedrockAgentCoreHarnessExecutionPolicy_a739u"
+  name = "AmazonBedrockAgentCoreHarnessExecutionPolicy_a739u-euw1"
   path = "/service-role/"
 
   policy = jsonencode({

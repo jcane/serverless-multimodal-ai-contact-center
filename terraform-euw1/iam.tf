@@ -9,7 +9,7 @@
 # Role 1 — Lambda Master Execution Role
 ###############################################################
 resource "aws_iam_role" "master_role" {
-  name        = "Fixyachips-App-V1-FixyachipsMasterRole-93imi2rTiV4B"
+  name        = "Fixyachips-App-V1-FixyachipsMasterRole-93imi2rTiV4B-euw1"
   description = "Lambda execution role - least privilege for all workers"
   path        = "/"
 
@@ -47,7 +47,7 @@ resource "aws_iam_role" "master_role" {
 # Role 2 — MediaConvert Role
 ###############################################################
 resource "aws_iam_role" "mediaconvert_role" {
-  name        = "Fixyachips-App-V1-MediaConvertRole-E0dMye487z6W"
+  name        = "Fixyachips-App-V1-MediaConvertRole-E0dMye487z6W-euw1"
   description = "Least-privilege IAM role for MediaConvert VOD transcoding"
   path        = "/"
 
@@ -90,7 +90,7 @@ resource "aws_iam_role" "mediaconvert_role" {
 # Role 3 — API Gateway CloudWatch Role
 ###############################################################
 resource "aws_iam_role" "api_gateway_cloudwatch_role" {
-  name        = "Fixyachips-App-V1-ApiGatewayCloudWatchRole-4PhqDl9yhylW"
+  name        = "Fixyachips-App-V1-ApiGatewayCloudWatchRole-4PhqDl9yhylW-euw1"
   description = "API Gateway role for CloudWatch execution logs"
   path        = "/"
 

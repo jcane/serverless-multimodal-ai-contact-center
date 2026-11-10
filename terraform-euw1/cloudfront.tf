@@ -14,10 +14,8 @@ resource "aws_cloudfront_distribution" "main" {
   price_class         = "PriceClass_All"
   wait_for_deployment = false
 
-  aliases = [
-    "fixyachips.com",
-    "www.fixyachips.com"
-  ]
+  # aliases removed — fixyachips.com is owned by us-east-1 CloudFront
+# eu-west-1 distribution uses CloudFront domain only
 
   # INTENTIONAL: CloudFront WAF must be in us-east-1 — AWS global requirement, do not change
 web_acl_id = "arn:aws:wafv2:us-east-1:${var.account_id}:global/webacl/WebBodyguard-CUKBiodvYfdj/de0fe5fb-4dbe-40af-8793-a5e9d4a9f71a"

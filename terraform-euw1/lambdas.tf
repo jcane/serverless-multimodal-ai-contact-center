@@ -22,7 +22,7 @@
 
 resource "aws_lambda_function" "signup_worker" {
   function_name                  = "FixyachipsSignupWorker-Fixyachips-App-V1"
-  role                           = "arn:aws:iam::${var.account_id}:role/Fixyachips-App-V1-FixyachipsMasterRole-93imi2rTiV4B"
+  role                           = "arn:aws:iam::${var.account_id}:role/Fixyachips-App-V1-FixyachipsMasterRole-93imi2rTiV4B-euw1"
   runtime                        = "python3.12"
   handler                        = "index.lambda_handler"
   timeout                        = 29
@@ -67,7 +67,7 @@ resource "aws_lambda_function" "signup_worker" {
 
 resource "aws_lambda_function" "checkout_worker" {
   function_name                  = "FixyachipsCheckoutWorker-Fixyachips-App-V1"
-  role                           = "arn:aws:iam::${var.account_id}:role/Fixyachips-App-V1-FixyachipsMasterRole-93imi2rTiV4B"
+  role                           = "arn:aws:iam::${var.account_id}:role/Fixyachips-App-V1-FixyachipsMasterRole-93imi2rTiV4B-euw1"
   runtime                        = "python3.12"
   handler                        = "index.lambda_handler"
   timeout                        = 29
@@ -77,7 +77,7 @@ resource "aws_lambda_function" "checkout_worker" {
   filename = "${path.module}/../src/checkout_worker/index.zip"
 
   layers = [
-    "arn:aws:lambda:eu-west-1:${var.account_id}:layer:stripe-python-layer-Fixyachips-App-V1:1"
+    aws_lambda_layer_version.stripe_python.arn
   ]
 
   dead_letter_config {
@@ -116,7 +116,7 @@ resource "aws_lambda_function" "checkout_worker" {
 
 resource "aws_lambda_function" "stripe_webhook" {
   function_name                  = "FixyachipsStripeWebhook-Fixyachips-App-V1"
-  role                           = "arn:aws:iam::${var.account_id}:role/Fixyachips-App-V1-FixyachipsMasterRole-93imi2rTiV4B"
+  role                           = "arn:aws:iam::${var.account_id}:role/Fixyachips-App-V1-FixyachipsMasterRole-93imi2rTiV4B-euw1"
   runtime                        = "python3.12"
   handler                        = "index.lambda_handler"
   timeout                        = 29
@@ -158,7 +158,7 @@ resource "aws_lambda_function" "stripe_webhook" {
 
 resource "aws_lambda_function" "mediaconvert_trigger" {
   function_name                  = "FixyachipsMediaConvertTrigger-Fixyachips-App-V1"
-  role                           = "arn:aws:iam::${var.account_id}:role/Fixyachips-App-V1-FixyachipsMasterRole-93imi2rTiV4B"
+  role                           = "arn:aws:iam::${var.account_id}:role/Fixyachips-App-V1-FixyachipsMasterRole-93imi2rTiV4B-euw1"
   runtime                        = "python3.12"
   handler                        = "index.lambda_handler"
   timeout                        = 60
@@ -198,7 +198,7 @@ resource "aws_lambda_function" "mediaconvert_trigger" {
 
 resource "aws_lambda_function" "video_factory_trigger" {
   function_name = "Fixyachips-Video-Factory-Trigger"
-  role          = "arn:aws:iam::${var.account_id}:role/Fixyachips-App-V1-FixyachipsMasterRole-93imi2rTiV4B"
+  role          = "arn:aws:iam::${var.account_id}:role/Fixyachips-App-V1-FixyachipsMasterRole-93imi2rTiV4B-euw1"
   runtime       = "python3.12"
   handler       = "lambda_function.lambda_handler"
   timeout       = 3
@@ -229,7 +229,7 @@ resource "aws_lambda_function" "video_factory_trigger" {
 
 resource "aws_lambda_function" "post_confirmation_trigger" {
   function_name = "Fixyachips-PostConfirmation-Trigger"
-  role          = "arn:aws:iam::${var.account_id}:role/Fixyachips-App-V1-FixyachipsMasterRole-93imi2rTiV4B"
+  role          = "arn:aws:iam::${var.account_id}:role/Fixyachips-App-V1-FixyachipsMasterRole-93imi2rTiV4B-euw1"
   runtime       = "nodejs22.x"
   handler       = "index.handler"
   timeout       = 3

@@ -1,0 +1,79 @@
+RECON DATE: Sat Nov 14 07:57:10 PM EST 2026
+ACCOUNT: 980049663300
+REGION: us-east-1
+
+=== STATE MACHINES ===
+--------------------------------------------------------------------------------------------------------------------
+|                                                 ListStateMachines                                                |
++------+-----------------------------------------------------------------------------------------------------------+
+|  ARN |  arn:aws:states:us-east-1:980049663300:stateMachine:Fixyachips-VOD-Localization-Multi-Language-Pipeline   |
+|  Name|  Fixyachips-VOD-Localization-Multi-Language-Pipeline                                                      |
++------+-----------------------------------------------------------------------------------------------------------+
+
+=== LAMBDAS ===
+-------------------------------------------------------------------
+|                          ListFunctions                          |
++---------------------------------------------------+-------------+
+|                       Name                        |   Runtime   |
++---------------------------------------------------+-------------+
+|  fixyachips-extract-transcript                    |  python3.12 |
+|  FixyachipsSignupWorker-Fixyachips-App-V1         |  python3.12 |
+|  FixYaChips_Chat_Data_Router                      |  nodejs24.x |
+|  FixyachipsStripeWebhook-Fixyachips-App-V1        |  python3.12 |
+|  Fixyachips-Video-Factory-Trigger                 |  python3.12 |
+|  VOD-Pipeline-Trigger                             |  python3.12 |
+|  FixyachipsCheckoutWorker-Fixyachips-App-V1       |  python3.12 |
+|  Fixyachips-PostConfirmation-Trigger              |  nodejs22.x |
+|  FixyachipsMediaConvertTrigger-Fixyachips-App-V1  |  python3.12 |
++---------------------------------------------------+-------------+
+
+=== S3 BUCKETS ===
+--------------------------------------------------------------
+|                         ListBuckets                        |
++------------------------------------------------------------+
+|  amazon-connect-04cd06d60609                               |
+|  amazon-connect-04cd06d60609-access-logs                   |
+|  amazon-connect-827a310b58bc                               |
+|  amazon-connect-827a310b58bc-access-logs                   |
+|  aws-cloudtrail-logs-980049663300-4747e36a                 |
+|  caneswindshieldrepair.com                                 |
+|  cf-templates-1bl2qxon1a4fu-us-east-1                      |
+|  fixyachips                                                |
+|  fixyachips-cfn-templates-980049663300                     |
+|  fixyachips-logs-980049663300                              |
+|  fixyachips-logs-980049663300-prod-euw1                    |
+|  fixyachips-logs-980049663300-prod-v2                      |
+|  fixyachips-platform-980049663300                          |
+|  fixyachips-platform-980049663300-euw1                     |
+|  fixyachips-platform-980049663300-prod                     |
+|  fixyachips-platform-980049663300-prod-euw1                |
+|  fixyachips-terraform-state-980049663300                   |
+|  fixyachips-terraform-state-980049663300-euw1              |
+|  fixyachips-tutorials                                      |
+|  fixyachips-v2-master-vault                                |
+|  fixyachips-v2-master-vault-euw1                           |
+|  fixyachips-vod-destination-980049663300-euw1              |
+|  fixyachips-vod-logs-980049663300-prod-euw1                |
+|  fixyachips-vod-manuals-980049663300-euw1                  |
+|  fixyachips-vod-platform-980049663300                      |
+|  fixyachips-vod-source-980049663300-euw1                   |
+|  kansho-platform                                           |
+|  sagemaker-us-east-1-980049663300                          |
+|  states-templates-qg5qzdfq5n2hy-us-east-1                  |
+|  videoondemandfixyachips-destination920a3c57-ykrxy0jwcztr  |
+|  videoondemandfixyachips-logs6819bb44-xb8dlny4ktd9         |
+|  videoondemandfixyachips-manuals                           |
+|  videoondemandfixyachips-source71e471f1-wlr7kazkufmk       |
++------------------------------------------------------------+
+
+=== CLOUDFORMATION STACKS ===
+------------------------------------------------------------
+|                        ListStacks                        |
++--------------------------------------+-------------------+
+|                 Stack                |      Status       |
++--------------------------------------+-------------------+
+|  fixyachips-exec-role-setup          |  CREATE_COMPLETE  |
+|  StackSetsExecutionRole-Stack        |  CREATE_COMPLETE  |
+|  OrganizationAccountAccessRole-Stack |  CREATE_COMPLETE  |
+|  Fixyachips-App-V1                   |  UPDATE_COMPLETE  |
++--------------------------------------+-------------------+

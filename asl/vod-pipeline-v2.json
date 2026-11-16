@@ -1,0 +1,315 @@
+{
+  "Comment": "VOD Localization Pipeline v2 — 7 languages — MediaConvert inside Map loop",
+  "StartAt": "TranscribeVideo",
+  "States": {
+    "TranscribeVideo": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:transcribe:startTranscriptionJob",
+      "Parameters": {
+        "TranscriptionJobName.$": "$.jobName",
+        "Media": {
+          "MediaFileUri.$": "States.Format('s3://videoondemandfixyachips-source71e471f1-wlr7kazkufmk/source/{}', $.sourceKey)"
+        },
+        "MediaFormat": "mp4",
+        "LanguageCode": "en-US",
+        "OutputBucketName": "videoondemandfixyachips-manuals",
+        "OutputKey.$": "States.Format('transcripts/{}/{}.json', $.jobName, $.jobName)"
+      },
+      "Next": "WaitForTranscribe",
+      "ResultPath": "$.transcribeResult"
+    },
+    "WaitForTranscribe": {
+      "Type": "Wait",
+      "Seconds": 30,
+      "Next": "CheckTranscribeStatus"
+    },
+    "CheckTranscribeStatus": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:transcribe:getTranscriptionJob",
+      "Parameters": {
+        "TranscriptionJobName.$": "$.jobName"
+      },
+      "ResultPath": "$.transcribeStatus",
+      "Next": "TranscribeComplete?"
+    },
+    "TranscribeComplete?": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.transcribeStatus.TranscriptionJob.TranscriptionJobStatus",
+          "StringEquals": "COMPLETED",
+          "Next": "ExtractTranscript"
+        },
+        {
+          "Variable": "$.transcribeStatus.TranscriptionJob.TranscriptionJobStatus",
+          "StringEquals": "FAILED",
+          "Next": "TranscribeFailed"
+        }
+      ],
+      "Default": "WaitForTranscribe"
+    },
+    "TranscribeFailed": {
+      "Type": "Fail",
+      "Error": "TranscribeJobFailed",
+      "Cause": "Transcribe job returned FAILED status"
+    },
+    "ExtractTranscript": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "fixyachips-extract-transcript",
+        "Payload": {
+          "jobName.$": "$.jobName",
+          "transcriptBucket": "videoondemandfixyachips-manuals",
+          "transcriptKey.$": "States.Format('transcripts/{}/{}.json', $.jobName, $.jobName)"
+        }
+      },
+      "ResultSelector": {
+        "transcriptText.$": "$.Payload.transcriptText"
+      },
+      "ResultPath": "$.extractResult",
+      "Next": "ProcessLanguages"
+    },
+    "ProcessLanguages": {
+      "Type": "Map",
+      "ItemsPath": "$.languages",
+      "ItemSelector": {
+        "jobName.$": "$$.Map.Item.Value.jobName",
+        "languageCode.$": "$$.Map.Item.Value.languageCode",
+        "voiceId.$": "$$.Map.Item.Value.voiceId",
+        "pollyEngine.$": "$$.Map.Item.Value.pollyEngine",
+        "transcriptText.$": "$.extractResult.transcriptText",
+        "sourceKey.$": "$.sourceKey"
+      },
+      "MaxConcurrency": 3,
+      "Iterator": {
+        "StartAt": "IsEnglish?",
+        "States": {
+          "IsEnglish?": {
+            "Type": "Choice",
+            "Choices": [
+              {
+                "Variable": "$.languageCode",
+                "StringEquals": "en-US",
+                "Next": "MediaConvertEnglish"
+              }
+            ],
+            "Default": "TranslateText"
+          },
+          "TranslateText": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:translate:translateText",
+            "Parameters": {
+              "Text.$": "$.transcriptText",
+              "SourceLanguageCode": "en",
+              "TargetLanguageCode.$": "States.ArrayGetItem(States.StringSplit($.languageCode, '-'), 0)"
+            },
+            "ResultSelector": {
+              "translatedText.$": "$.TranslatedText"
+            },
+            "ResultPath": "$.translateResult",
+            "Next": "SynthesizeSpeech"
+          },
+          "SynthesizeSpeech": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:polly:startSpeechSynthesisTask",
+            "Parameters": {
+              "Text.$": "$.translateResult.translatedText",
+              "VoiceId.$": "$.voiceId",
+              "OutputFormat": "mp3",
+              "OutputS3BucketName": "videoondemandfixyachips-manuals",
+              "OutputS3KeyPrefix.$": "States.Format('polly-output/{}/{}/', $.jobName, $.languageCode)",
+              "Engine.$": "$.pollyEngine"
+            },
+            "ResultSelector": {
+              "taskId.$": "$.SynthesisTask.TaskId",
+              "outputUri.$": "$.SynthesisTask.OutputUri"
+            },
+            "ResultPath": "$.pollyResult",
+            "Next": "WaitForPolly"
+          },
+          "WaitForPolly": {
+            "Type": "Wait",
+            "Seconds": 20,
+            "Next": "CheckPollyStatus"
+          },
+          "CheckPollyStatus": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:polly:getSpeechSynthesisTask",
+            "Parameters": {
+              "TaskId.$": "$.pollyResult.taskId"
+            },
+            "ResultSelector": {
+              "taskStatus.$": "$.SynthesisTask.TaskStatus",
+              "outputUri.$": "$.SynthesisTask.OutputUri"
+            },
+            "ResultPath": "$.pollyStatus",
+            "Next": "PollyComplete?"
+          },
+          "PollyComplete?": {
+            "Type": "Choice",
+            "Choices": [
+              {
+                "Variable": "$.pollyStatus.taskStatus",
+                "StringEquals": "completed",
+                "Next": "MediaConvertLocalized"
+              },
+              {
+                "Variable": "$.pollyStatus.taskStatus",
+                "StringEquals": "failed",
+                "Next": "PollyFailed"
+              }
+            ],
+            "Default": "WaitForPolly"
+          },
+          "PollyFailed": {
+            "Type": "Fail",
+            "Error": "PollyTaskFailed",
+            "Cause": "Polly speech synthesis task returned failed status"
+          },
+          "MediaConvertLocalized": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::mediaconvert:createJob.sync",
+            "Parameters": {
+              "Role": "arn:aws:iam::980049663300:role/Fixyachips-App-V1-MediaConvertRole-E0dMye487z6W",
+              "Queue": "arn:aws:mediaconvert:us-east-1:980049663300:queues/FixyachipsVODQueue-Fixyachips-App-V1",
+              "UserMetadata": {
+                "jobName.$": "$.jobName",
+                "languageCode.$": "$.languageCode"
+              },
+              "Settings": {
+                "Inputs": [
+                  {
+                    "FileInput.$": "States.Format('s3://videoondemandfixyachips-source71e471f1-wlr7kazkufmk/source/{}', $.sourceKey)",
+                    "AudioSelectors": {
+                      "Audio Selector 1": {
+                        "ExternalAudioFileInput.$": "$.pollyStatus.outputUri",
+                        "Offset": 0
+                      }
+                    },
+                    "VideoSelector": {}
+                  }
+                ],
+                "OutputGroups": [
+                  {
+                    "Name": "File Group",
+                    "OutputGroupSettings": {
+                      "Type": "FILE_GROUP_SETTINGS",
+                      "FileGroupSettings": {
+                        "Destination.$": "States.Format('s3://videoondemandfixyachips-destination920a3c57-ykrxy0jwcztr/videos/{}/{}/', $.jobName, $.languageCode)"
+                      }
+                    },
+                    "Outputs": [
+                      {
+                        "NameModifier.$": "States.Format('-{}', $.languageCode)",
+                        "ContainerSettings": {
+                          "Container": "MP4"
+                        },
+                        "VideoDescription": {
+                          "CodecSettings": {
+                            "Codec": "H_264",
+                            "H264Settings": {
+                              "RateControlMode": "QVBR",
+                              "SceneChangeDetect": "TRANSITION_DETECTION",
+                              "MaxBitrate": 5000000
+                            }
+                          }
+                        },
+                        "AudioDescriptions": [
+                          {
+                            "AudioSourceName": "Audio Selector 1",
+                            "CodecSettings": {
+                              "Codec": "AAC",
+                              "AacSettings": {
+                                "Bitrate": 96000,
+                                "CodingMode": "CODING_MODE_2_0",
+                                "SampleRate": 48000
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            },
+            "ResultPath": "$.mediaConvertResult",
+            "End": true
+          },
+          "MediaConvertEnglish": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::mediaconvert:createJob.sync",
+            "Parameters": {
+              "Role": "arn:aws:iam::980049663300:role/Fixyachips-App-V1-MediaConvertRole-E0dMye487z6W",
+              "Queue": "arn:aws:mediaconvert:us-east-1:980049663300:queues/FixyachipsVODQueue-Fixyachips-App-V1",
+              "UserMetadata": {
+                "jobName.$": "$.jobName",
+                "languageCode.$": "$.languageCode"
+              },
+              "Settings": {
+                "Inputs": [
+                  {
+                    "FileInput.$": "States.Format('s3://videoondemandfixyachips-source71e471f1-wlr7kazkufmk/source/{}', $.sourceKey)",
+                    "AudioSelectors": {
+                      "Audio Selector 1": {
+                        "DefaultSelection": "DEFAULT"
+                      }
+                    },
+                    "VideoSelector": {}
+                  }
+                ],
+                "OutputGroups": [
+                  {
+                    "Name": "File Group",
+                    "OutputGroupSettings": {
+                      "Type": "FILE_GROUP_SETTINGS",
+                      "FileGroupSettings": {
+                        "Destination.$": "States.Format('s3://videoondemandfixyachips-destination920a3c57-ykrxy0jwcztr/videos/{}/{}/', $.jobName, $.languageCode)"
+                      }
+                    },
+                    "Outputs": [
+                      {
+                        "NameModifier.$": "States.Format('-{}', $.languageCode)",
+                        "ContainerSettings": {
+                          "Container": "MP4"
+                        },
+                        "VideoDescription": {
+                          "CodecSettings": {
+                            "Codec": "H_264",
+                            "H264Settings": {
+                              "RateControlMode": "QVBR",
+                              "SceneChangeDetect": "TRANSITION_DETECTION",
+                              "MaxBitrate": 5000000
+                            }
+                          }
+                        },
+                        "AudioDescriptions": [
+                          {
+                            "AudioSourceName": "Audio Selector 1",
+                            "CodecSettings": {
+                              "Codec": "AAC",
+                              "AacSettings": {
+                                "Bitrate": 96000,
+                                "CodingMode": "CODING_MODE_2_0",
+                                "SampleRate": 48000
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            },
+            "ResultPath": "$.mediaConvertResult",
+            "End": true
+          }
+        }
+      },
+      "ResultPath": "$.mapResults",
+      "End": true
+    }
+  }
+}

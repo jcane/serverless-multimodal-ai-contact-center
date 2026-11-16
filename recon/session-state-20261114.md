@@ -75,3 +75,9 @@ MaxConcurrency stays at 3.
 Use FixyachipsVODQueue not the Default queue.
 Output structure is videos/jobname/languageCode/jobname-languageCode.mp4
 Do not generate CloudFormation. Do not reference eu-west-1. Write the ASL JSON only.
+
+## Session 2 Update — November 15 2026
+Day 3 complete. ASL JSON saved, validated, committed, pushed.
+Next session opens at Day 4 — deploy and test.
+First command is update-state-machine with v2 JSON.
+Upwork profile live. LinkedIn and Facebook posts published.

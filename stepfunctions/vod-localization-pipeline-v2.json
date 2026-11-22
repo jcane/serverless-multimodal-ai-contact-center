@@ -1,5 +1,5 @@
 {
-  "Comment": "Fixyachips VOD Localization Pipeline v2 — MediaConvert inside Map loop, Polly OutputUri wired, English bypass, 7 languages",
+  "Comment": "Fixyachips VOD Localization Pipeline v2 \u2014 MediaConvert inside Map loop, Polly OutputUri wired, English bypass, 7 languages",
   "StartAt": "StartTranscribeJob",
   "States": {
     "StartTranscribeJob": {
@@ -8,7 +8,7 @@
       "Parameters": {
         "TranscriptionJobName.$": "States.Format('transcribe-{}', $$.Execution.Name)",
         "Media": {
-          "MediaFileUri.$": "States.Format('s3://videoondemandfixyachips-source71e471f1-wlr7kazkufmk/source/{}', $.videoKey)"
+          "MediaFileUri.$": "$.videoSourcePath"
         },
         "MediaFormat": "mp4",
         "LanguageCode": "en-US",
@@ -136,10 +136,9 @@
         "voiceId.$": "$$.Map.Item.Value.voiceId",
         "engine.$": "$$.Map.Item.Value.engine",
         "isEnglish.$": "$$.Map.Item.Value.isEnglish",
-        "videoKey.$": "$.videoKey",
+        "videoSourcePath.$": "$.videoSourcePath",
         "extractedTranscript.$": "$.extractedTranscript"
       },
-      "MaxConcurrency": 3,
       "Iterator": {
         "StartAt": "IsEnglish",
         "States": {
@@ -231,7 +230,7 @@
               {
                 "Variable": "$.pollyStatus.SynthesisTask.TaskStatus",
                 "StringEquals": "completed",
-                "Next": "RunMediaConvertPolly"
+                "Next": "ConvertPollyUri"
               },
               {
                 "Variable": "$.pollyStatus.SynthesisTask.TaskStatus",
@@ -250,7 +249,7 @@
               "Settings": {
                 "Inputs": [
                   {
-                    "FileInput.$": "States.Format('s3://videoondemandfixyachips-source71e471f1-wlr7kazkufmk/source/{}', $.videoKey)",
+                    "FileInput.$": "$.videoSourcePath",
                     "AudioSelectors": {
                       "Audio Selector 1": {
                         "DefaultSelection": "DEFAULT"
@@ -293,7 +292,7 @@
                             "CodecSettings": {
                               "Codec": "AAC",
                               "AacSettings": {
-                                "Bitrate": 96000,
+                                "Bitrate": 32000,
                                 "CodingMode": "CODING_MODE_2_0",
                                 "SampleRate": 22050
                               }
@@ -328,13 +327,13 @@
               "Settings": {
                 "Inputs": [
                   {
-                    "FileInput.$": "States.Format('s3://videoondemandfixyachips-source71e471f1-wlr7kazkufmk/source/{}', $.videoKey)",
+                    "FileInput.$": "$.videoSourcePath",
                     "AudioSelectors": {
                       "Audio Selector 1": {
                         "DefaultSelection": "NOT_DEFAULT"
                       },
                       "Audio Selector 2": {
-                        "ExternalAudioFileInput.$": "$.pollyStatus.SynthesisTask.OutputUri",
+                        "ExternalAudioFileInput.$": "$.pollyS3Uri",
                         "DefaultSelection": "DEFAULT"
                       }
                     },
@@ -375,7 +374,7 @@
                             "CodecSettings": {
                               "Codec": "AAC",
                               "AacSettings": {
-                                "Bitrate": 96000,
+                                "Bitrate": 32000,
                                 "CodingMode": "CODING_MODE_2_0",
                                 "SampleRate": 22050
                               }
@@ -409,6 +408,22 @@
             "Type": "Pass",
             "Result": "Language processing failed",
             "End": true
+          },
+          "ConvertPollyUri": {
+            "Type": "Pass",
+            "Parameters": {
+              "pollyS3Uri.$": "States.Format('s3://videoondemandfixyachips-destination920a3c57-ykrxy0jwcztr/polly/{}/{}/{}', $$.Execution.Name, $.languageShort, States.ArrayGetItem(States.StringSplit($.pollyStatus.SynthesisTask.OutputUri, '/'), States.MathAdd(States.ArrayLength(States.StringSplit($.pollyStatus.SynthesisTask.OutputUri, '/')), -1)))",
+              "languageCode.$": "$.languageCode",
+              "languageShort.$": "$.languageShort",
+              "voiceId.$": "$.voiceId",
+              "engine.$": "$.engine",
+              "isEnglish.$": "$.isEnglish",
+              "videoSourcePath.$": "$.videoSourcePath",
+              "extractedTranscript.$": "$.extractedTranscript",
+              "pollyStatus.$": "$.pollyStatus"
+            },
+            "ResultPath": "$",
+            "Next": "RunMediaConvertPolly"
           }
         }
       },

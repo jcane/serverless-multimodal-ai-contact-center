@@ -1,0 +1,79 @@
+{
+  "Version": "2019-10-30",
+  "StartAction": "msg1",
+  "Actions": [
+    {
+      "Identifier": "msg1",
+      "Type": "MessageParticipant",
+      "Parameters": {
+        "Text": "Welcome to Fixyachips Method!"
+      },
+      "Transitions": {
+        "NextAction": "attrs1",
+        "Errors": [],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "attrs1",
+      "Type": "UpdateContactAttributes",
+      "Parameters": {
+        "Attributes": {
+          "page_source": "homepage",
+          "lead_type": "general"
+        }
+      },
+      "Transitions": {
+        "NextAction": "lambda1",
+        "Errors": [
+          {
+            "NextAction": "queue1",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "lambda1",
+      "Type": "InvokeLambdaFunction",
+      "Parameters": {
+        "LambdaFunctionARN": "arn:aws:lambda:us-east-1:980049663300:function:FixYaChips_Chat_Data_Router",
+        "InvocationTimeLimitSeconds": "8"
+      },
+      "Transitions": {
+        "NextAction": "queue1",
+        "Errors": [
+          {
+            "NextAction": "queue1",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "queue1",
+      "Type": "TransferContactToQueue",
+      "Parameters": {
+        "QueueId": "arn:aws:connect:us-east-1:980049663300:instance/6740280a-eba6-475a-a0ee-8be20550d799/queue/7afa4663-424b-41b5-8131-5ed1983d9e62"
+      },
+      "Transitions": {
+        "NextAction": "end1",
+        "Errors": [
+          {
+            "NextAction": "end1",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "end1",
+      "Type": "DisconnectParticipant",
+      "Parameters": {},
+      "Transitions": {}
+    }
+  ]
+}

@@ -1,0 +1,98 @@
+{
+  "Version": "2019-10-30",
+  "StartAction": "msg1",
+  "Actions": [
+    {
+      "Identifier": "msg1",
+      "Type": "MessageParticipant",
+      "Parameters": {
+        "Text": "Welcome to Fixyachips Method! You have reached our professional training program. Learn directly from masters trained in 1982. How can we help you today?"
+      },
+      "Transitions": {
+        "NextAction": "attrs1",
+        "Errors": [],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "attrs1",
+      "Type": "UpdateContactAttributes",
+      "Parameters": {
+        "Attributes": {
+          "page_source": "training",
+          "lead_type": "training"
+        }
+      },
+      "Transitions": {
+        "NextAction": "lambda1",
+        "Errors": [
+          {
+            "NextAction": "setqueue1",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "lambda1",
+      "Type": "InvokeLambdaFunction",
+      "Parameters": {
+        "LambdaFunctionARN": "arn:aws:lambda:us-east-1:980049663300:function:FixYaChips_Chat_Data_Router",
+        "InvocationTimeLimitSeconds": "8"
+      },
+      "Transitions": {
+        "NextAction": "setqueue1",
+        "Errors": [
+          {
+            "NextAction": "setqueue1",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "setqueue1",
+      "Type": "UpdateContactTargetQueue",
+      "Parameters": {
+        "QueueId": "arn:aws:connect:us-east-1:980049663300:instance/6740280a-eba6-475a-a0ee-8be20550d799/queue/b04e4570-61a7-49dc-a0d3-67f215188863"
+      },
+      "Transitions": {
+        "NextAction": "transfer1",
+        "Errors": [
+          {
+            "NextAction": "end1",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "transfer1",
+      "Type": "TransferContactToQueue",
+      "Parameters": {},
+      "Transitions": {
+        "NextAction": "end1",
+        "Errors": [
+          {
+            "NextAction": "end1",
+            "ErrorType": "NoMatchingError"
+          },
+          {
+            "NextAction": "end1",
+            "ErrorType": "QueueAtCapacity"
+          }
+        ],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "end1",
+      "Type": "DisconnectParticipant",
+      "Parameters": {},
+      "Transitions": {}
+    }
+  ]
+}

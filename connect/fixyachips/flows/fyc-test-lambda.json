@@ -1,0 +1,62 @@
+{
+  "Version": "2019-10-30",
+  "StartAction": "msg1",
+  "Actions": [
+    {
+      "Identifier": "msg1",
+      "Type": "MessageParticipant",
+      "Parameters": {
+        "Text": "Welcome to Fixyachips Method!"
+      },
+      "Transitions": {
+        "NextAction": "attrs1",
+        "Errors": [],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "attrs1",
+      "Type": "UpdateContactAttributes",
+      "Parameters": {
+        "Attributes": {
+          "page_source": "homepage",
+          "lead_type": "general"
+        }
+      },
+      "Transitions": {
+        "NextAction": "lambda1",
+        "Errors": [
+          {
+            "NextAction": "end1",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "lambda1",
+      "Type": "InvokeLambdaFunction",
+      "Parameters": {
+        "LambdaFunctionARN": "arn:aws:lambda:us-east-1:980049663300:function:FixYaChips_Chat_Data_Router",
+        "InvocationTimeLimitSeconds": "8"
+      },
+      "Transitions": {
+        "NextAction": "end1",
+        "Errors": [
+          {
+            "NextAction": "end1",
+            "ErrorType": "NoMatchingError"
+          }
+        ],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "end1",
+      "Type": "DisconnectParticipant",
+      "Parameters": {},
+      "Transitions": {}
+    }
+  ]
+}

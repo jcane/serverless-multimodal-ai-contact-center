@@ -1,0 +1,24 @@
+{
+  "Version": "2019-10-30",
+  "StartAction": "msg1",
+  "Actions": [
+    {
+      "Identifier": "msg1",
+      "Type": "MessageParticipant",
+      "Parameters": {
+        "Text": "Welcome to Fixyachips Method!"
+      },
+      "Transitions": {
+        "NextAction": "end1",
+        "Errors": [],
+        "Conditions": []
+      }
+    },
+    {
+      "Identifier": "end1",
+      "Type": "DisconnectParticipant",
+      "Parameters": {},
+      "Transitions": {}
+    }
+  ]
+}
